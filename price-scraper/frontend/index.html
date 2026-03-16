@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prijsvergelijker België</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Prijsvergelijker</h1>
+    <p class="subtitle">Vergelijk prijzen op bol.com, Amazon, Coolblue, MediaMarkt en Fnac</p>
+  </header>
+
+  <main>
+    <form id="search-form">
+      <div class="search-row">
+        <input
+          id="search-input"
+          type="text"
+          placeholder="Zoek een product, bijv. &quot;Sony WH-1000XM5&quot;"
+          autocomplete="off"
+          required
+        />
+        <button type="submit" id="search-btn">Zoeken</button>
+      </div>
+    </form>
+
+    <div id="status" class="status hidden"></div>
+
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p>Winkels worden doorzocht… Dit kan 20–30 seconden duren.</p>
+    </div>
+
+    <div id="results-header" class="results-header hidden">
+      <span id="results-count"></span>
+      <span id="shops-status"></span>
+    </div>
+
+    <div id="results-grid" class="results-grid"></div>
+
+    <div id="no-results" class="no-results hidden">
+      <p>Geen beschikbare producten gevonden voor "<span id="no-results-query"></span>".</p>
+      <p class="hint">Probeer een andere zoekopdracht of controleer de spelling.</p>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
