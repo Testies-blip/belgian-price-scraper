@@ -18,6 +18,57 @@ OUT_OF_STOCK_PHRASES = [
     "currently unavailable",
 ]
 
+# JS extractor for Amazon.com.be search results.
+# Key findings from probing:
+#   - <h2> contains title only as a <span> or aria-label — there is NO <a> inside <h2>
+#   - Product URL: first <a href*="/dp/"> in the card, or constructed from data-asin
+#   - Price:  span.a-price > span.a-offscreen  (screen-reader price, still works)
+#   - Sponsored badge: .puis-sponsored-label-text or [class*="sponsored-label"]
+_EXTRACT_JS = """
+() => {
+    const cards = Array.from(document.querySelectorAll('[data-component-type="s-search-result"]'));
+    return cards.slice(0, 20).map(card => {
+        const text = card.innerText || '';
+        const lower = text.toLowerCase();
+
+        // Out-of-stock check
+        const outOfStock = lower.includes('tijdelijk niet op voorraad') ||
+                           lower.includes('momenteel niet beschikbaar') ||
+                           lower.includes('currently unavailable');
+
+        // Sponsored check via dedicated badge element (not full-text scan)
+        const sponsBadge = card.querySelector('.puis-sponsored-label-text, [class*="sponsored-label"]');
+        const isSponsored = !!sponsBadge;
+
+        // Title: h2 span text is clean (no "Gesponsorde advertentie" prefix).
+        // aria-label fallback includes promo context for sponsored items, so prefer span.
+        const h2 = card.querySelector('h2');
+        const h2Span = h2 ? h2.querySelector('span') : null;
+        const title = h2Span
+            ? h2Span.innerText.trim()
+            : (h2 ? (h2.getAttribute('aria-label') || '') : null);
+
+        // Price
+        const priceEl = card.querySelector('span.a-price > span.a-offscreen');
+        const priceText = priceEl ? priceEl.innerText : null;
+
+        // Link: build from ASIN (most reliable) or first /dp/ link
+        const asin = card.getAttribute('data-asin');
+        let href = asin ? ('https://www.amazon.com.be/dp/' + asin) : null;
+        if (!href) {
+            const linkEl = card.querySelector('a[href*="/dp/"]');
+            href = linkEl ? linkEl.href : null;
+        }
+
+        // Image
+        const imgEl = card.querySelector('img.s-image');
+        const imageUrl = imgEl ? imgEl.src : null;
+
+        return { title, priceText, href, imageUrl, outOfStock, isSponsored };
+    }).filter(p => p.title && p.href && p.priceText && !p.outOfStock);
+}
+"""
+
 
 def _parse_price(text: str) -> float | None:
     cleaned = re.sub(r"[^\d,\.]", "", text).replace(",", ".")
@@ -25,7 +76,8 @@ def _parse_price(text: str) -> float | None:
     if len(parts) > 2:
         cleaned = "".join(parts[:-1]) + "." + parts[-1]
     try:
-        return float(cleaned)
+        v = float(cleaned)
+        return v if v > 0 else None
     except ValueError:
         return None
 
@@ -43,8 +95,7 @@ def _scrape_amazon_sync(query: str) -> list[ProductResult]:
 
             # Accept cookie consent if present
             try:
-                consent_btn = page.locator("input[id='sp-cc-accept'], button:has-text('Accepteer'), #acceptCookies")
-                consent_btn.first.click(timeout=5_000)
+                page.locator("input[id='sp-cc-accept'], #acceptCookies").first.click(timeout=5_000)
                 random_delay(0.3, 0.8)
             except Exception:
                 pass
@@ -55,44 +106,29 @@ def _scrape_amazon_sync(query: str) -> list[ProductResult]:
                 logger.warning("amazon.com.be: blocked by captcha/bot detection")
                 return []
 
-            page.wait_for_selector("[data-component-type='s-search-result']", timeout=20_000)
-            cards = page.query_selector_all("[data-component-type='s-search-result']")
+            try:
+                page.wait_for_selector("[data-component-type='s-search-result']", timeout=20_000)
+            except Exception:
+                logger.warning("amazon.com.be: no search result cards found")
+                return []
 
-            for card in cards[:12]:
+            products = page.evaluate(_EXTRACT_JS)
+
+            for item in products:
                 if len(results) >= 8:
                     break
-
-                card_text = card.inner_text().lower()
-                if "gesponsord" in card_text or "sponsored" in card_text:
+                price = _parse_price(item["priceText"])
+                if price is None:
                     continue
-                if any(phrase in card_text for phrase in OUT_OF_STOCK_PHRASES):
-                    continue
-
-                title_el = card.query_selector("h2 span, h2 a span")
-                title = title_el.inner_text().strip() if title_el else None
-                if not title:
-                    continue
-
-                price_el = card.query_selector("span.a-price > span.a-offscreen")
-                if not price_el:
-                    continue
-                price = _parse_price(price_el.inner_text())
-                if price is None or price <= 0:
-                    continue
-
-                link_el = card.query_selector("h2 a[href]")
-                href = link_el.get_attribute("href") if link_el else None
-                if not href:
-                    continue
-                if href.startswith("/"):
+                href = item["href"]
+                if href and href.startswith("/"):
                     href = "https://www.amazon.com.be" + href
-
-                img_el = card.query_selector("img.s-image")
-                img_url = img_el.get_attribute("src") if img_el else None
-
                 results.append(ProductResult(
-                    shop="Amazon", title=title, price_eur=price,
-                    url=href, image_url=img_url,
+                    shop="Amazon",
+                    title=item["title"],
+                    price_eur=price,
+                    url=href,
+                    image_url=item.get("imageUrl"),
                 ))
 
     except Exception as exc:

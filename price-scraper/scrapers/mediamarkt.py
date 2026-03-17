@@ -18,6 +18,48 @@ OUT_OF_STOCK_PHRASES = [
     "niet te koop",
 ]
 
+# JS extractor for MediaMarkt.be
+# Cards are <article> elements.
+# Title: first <p> with text length > 20 chars (avoids spec labels like "Smart-tv").
+# Price: first <span class="mms-ui-sr_true"> whose text matches a price pattern.
+# Link: <a href*="/product/"> inside the article.
+_EXTRACT_JS = """
+() => {
+    const articles = Array.from(document.querySelectorAll('article'));
+    return articles.slice(0, 15).map(art => {
+        const cardText = art.innerText || '';
+        const lower = cardText.toLowerCase();
+        const outOfStock = lower.includes('niet beschikbaar') ||
+                           lower.includes('niet op voorraad') ||
+                           lower.includes('uitverkocht');
+
+        // Title: first <p> with text > 20 characters
+        let title = null;
+        for (const p of art.querySelectorAll('p')) {
+            const t = (p.innerText || '').trim();
+            if (t.length > 20) { title = t; break; }
+        }
+
+        // Price: screen-reader span matching price pattern
+        let priceText = null;
+        for (const span of art.querySelectorAll('span.mms-ui-sr_true, span[class*="sr_true"]')) {
+            const t = (span.innerText || '').trim();
+            if (/\\d+[,\\.]\\d{2}/.test(t)) { priceText = t; break; }
+        }
+
+        // Link
+        const linkEl = art.querySelector('a[href*="/product/"]');
+        const href = linkEl ? linkEl.href : null;
+
+        // Image
+        const imgEl = art.querySelector('img[src]');
+        const imageUrl = imgEl ? imgEl.src : null;
+
+        return { title, priceText, href, imageUrl, outOfStock };
+    }).filter(p => p.title && p.href && p.priceText && !p.outOfStock);
+}
+"""
+
 
 def _parse_price(text: str) -> float | None:
     cleaned = re.sub(r"[^\d,\.]", "", text).replace(",", ".")
@@ -25,7 +67,8 @@ def _parse_price(text: str) -> float | None:
     if len(parts) > 2:
         cleaned = "".join(parts[:-1]) + "." + parts[-1]
     try:
-        return float(cleaned)
+        v = float(cleaned)
+        return v if v > 0 else None
     except ValueError:
         return None
 
@@ -38,13 +81,13 @@ def _scrape_mediamarkt_sync(query: str) -> list[ProductResult]:
             browser, context = make_sync_stealth_context(p)
             page = new_stealth_page(context)
 
+            # MediaMarkt often redirects search queries to a category page — that's fine
             page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             random_delay()
 
             # Accept cookie consent
             try:
-                consent_btn = page.locator("button:has-text('Akkoord'), button:has-text('Accepteer'), #onetrust-accept-btn-handler")
-                consent_btn.first.click(timeout=5_000)
+                page.locator("#onetrust-accept-btn-handler, button:has-text('Akkoord'), button:has-text('Accepteer')").first.click(timeout=5_000)
                 random_delay(0.5, 1.0)
             except Exception:
                 pass
@@ -54,52 +97,30 @@ def _scrape_mediamarkt_sync(query: str) -> list[ProductResult]:
                 logger.warning("mediamarkt.be: blocked by bot detection")
                 return []
 
+            # Wait for article cards
             try:
-                page.wait_for_selector(
-                    "[data-test='product-card'], .product-wrapper, [class*='ProductCard'], li[class*='product']",
-                    timeout=20_000,
-                )
+                page.wait_for_selector("article", timeout=20_000)
             except Exception:
                 logger.warning("mediamarkt.be: product cards not found")
                 return []
 
-            cards = page.query_selector_all(
-                "[data-test='product-card'], .product-wrapper, [class*='ProductCard']"
-            )
+            products = page.evaluate(_EXTRACT_JS)
 
-            for card in cards[:12]:
+            for item in products:
                 if len(results) >= 8:
                     break
-
-                card_text = card.inner_text().lower()
-                if any(phrase in card_text for phrase in OUT_OF_STOCK_PHRASES):
+                price = _parse_price(item["priceText"])
+                if price is None:
                     continue
-
-                title_el = card.query_selector("[class*='ProductName'], [data-test='product-title'], h2, h3")
-                title = title_el.inner_text().strip() if title_el else None
-                if not title:
-                    continue
-
-                price_el = card.query_selector("[class*='price__value'], [data-test='product-price'], [class*='Price']")
-                if not price_el:
-                    continue
-                price = _parse_price(price_el.inner_text())
-                if price is None or price <= 0:
-                    continue
-
-                link_el = card.query_selector("a[href]")
-                href = link_el.get_attribute("href") if link_el else None
-                if not href:
-                    continue
+                href = item["href"]
                 if href.startswith("/"):
                     href = "https://www.mediamarkt.be" + href
-
-                img_el = card.query_selector("img")
-                img_url = img_el.get_attribute("src") if img_el else None
-
                 results.append(ProductResult(
-                    shop="MediaMarkt", title=title, price_eur=price,
-                    url=href, image_url=img_url,
+                    shop="MediaMarkt",
+                    title=item["title"],
+                    price_eur=price,
+                    url=href,
+                    image_url=item.get("imageUrl"),
                 ))
 
     except Exception as exc:

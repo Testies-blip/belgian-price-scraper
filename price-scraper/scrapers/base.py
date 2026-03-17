@@ -24,7 +24,7 @@ def make_sync_stealth_context(playwright):
     Launch a headless Chromium browser with stealth patches (sync API).
     Returns (browser, context). Caller must call browser.close() when done.
     """
-    from playwright_stealth import stealth_sync
+    from playwright_stealth import Stealth
 
     browser = playwright.chromium.launch(
         headless=True,
@@ -42,13 +42,13 @@ def make_sync_stealth_context(playwright):
         viewport={"width": 1280, "height": 900},
         locale="nl-BE",
     )
-    context._stealth_fn = stealth_sync
+    context._stealth = Stealth()
     return browser, context
 
 
 def new_stealth_page(context):
     """Open a new page and apply playwright-stealth patches."""
     page = context.new_page()
-    if hasattr(context, "_stealth_fn"):
-        context._stealth_fn(page)
+    if hasattr(context, "_stealth"):
+        context._stealth.use_sync(page)
     return page
