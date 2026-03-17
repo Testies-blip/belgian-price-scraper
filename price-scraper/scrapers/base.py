@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -12,6 +13,28 @@ class ProductResult:
     price_eur: float
     url: str
     image_url: str | None = field(default=None)
+    quantity: int | None = field(default=None)
+    price_per_unit: float | None = field(default=None)
+
+
+# Regex that matches a quantity followed by a unit word.
+# We look for ALL matches and take the LAST one so that compound titles like
+# "24 Verpakkingen a 52 Doekjes = 1248 Billendoekjes" yield 1248, not 52.
+_QTY_RE = re.compile(
+    r"(\d+)\s*"
+    r"(?:luiers?|luierbroekjes?|billendoekjes?|babydoekjes?|doekjes?"
+    r"|nappies?|diapers?|stuks?|pieces?|tabletten?|capsules?|zakjes?)",
+    re.IGNORECASE,
+)
+
+
+def extract_quantity(title: str) -> int | None:
+    """Return the unit count found in a product title, or None if undetectable."""
+    matches = _QTY_RE.findall(title)
+    if not matches:
+        return None
+    # Take the last (typically largest / total) quantity mentioned
+    return int(matches[-1])
 
 
 def random_delay(min_s: float = 0.5, max_s: float = 1.5) -> None:

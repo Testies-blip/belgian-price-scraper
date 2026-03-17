@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from scrapers.amazon import scrape_amazon
+from scrapers.base import extract_quantity
 from scrapers.bol import scrape_bol
 from scrapers.coolblue import scrape_coolblue
 from scrapers.fnac import scrape_fnac
@@ -62,12 +63,29 @@ async def search(q: str = Query(..., min_length=1, max_length=200)):
         elif isinstance(task_result, Exception):
             logger.error("Scraper raised exception: %s", task_result)
 
-    merged.sort(key=lambda r: r.price_eur)
+    # Enrich each result with quantity and per-unit price
+    has_per_unit = False
+    for r in merged:
+        qty = extract_quantity(r.title)
+        if qty and qty > 1:
+            r.quantity = qty
+            r.price_per_unit = round(r.price_eur / qty, 4)
+            has_per_unit = True
+
+    # Sort by per-unit price (cheapest per unit first).
+    # Products without a detectable quantity fall back to total price and are
+    # placed after per-unit products so comparable items group together.
+    merged.sort(key=lambda r: (
+        r.price_per_unit is None,           # False (0) sorts before True (1)
+        r.price_per_unit if r.price_per_unit is not None else r.price_eur,
+    ))
+
     shops_without_results = [s for s in ALL_SHOPS if s not in shops_with_results]
 
     return {
         "query": query,
         "results": [asdict(r) for r in merged],
+        "sorted_by_unit_price": has_per_unit,
         "shops_searched": ALL_SHOPS,
         "shops_with_results": list(shops_with_results),
         "shops_without_results": shops_without_results,

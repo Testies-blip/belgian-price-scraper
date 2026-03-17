@@ -24,6 +24,16 @@ function formatPrice(eur) {
   return new Intl.NumberFormat('nl-BE', { style: 'currency', currency: 'EUR' }).format(eur);
 }
 
+function formatUnitPrice(eur) {
+  // Show up to 4 significant decimals so €0,2717 is readable, but €1,25 stays clean
+  return new Intl.NumberFormat('nl-BE', {
+    style: 'currency',
+    currency: 'EUR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(eur);
+}
+
 function shopBadge(shop) {
   const slug = SHOP_SLUG[shop] || 'bol';
   return `<span class="shop-badge shop-badge--${slug}">${shop}</span>`;
@@ -40,12 +50,17 @@ function renderCard(product) {
     ? `<img src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.title)}" loading="lazy" />`
     : `<span class="no-image">Geen afbeelding</span>`;
 
+  const unitPriceHtml = product.price_per_unit
+    ? `<p class="product-card__unit-price">${formatUnitPrice(product.price_per_unit)} / stuk</p>`
+    : '';
+
   card.innerHTML = `
     <div class="product-card__image-wrap">${imgHtml}</div>
     <div class="product-card__body">
       ${shopBadge(product.shop)}
       <p class="product-card__title">${escapeHtml(product.title)}</p>
       <p class="product-card__price">${formatPrice(product.price_eur)}</p>
+      ${unitPriceHtml}
     </div>
   `;
   return card;
@@ -97,7 +112,10 @@ form.addEventListener('submit', async (e) => {
       }
 
       // Header
-      resultsCount.textContent = `${data.results.length} resultaten`;
+      const sortLabel = data.sorted_by_unit_price
+        ? 'gesorteerd op prijs per stuk'
+        : 'gesorteerd op totaalprijs';
+      resultsCount.textContent = `${data.results.length} resultaten · ${sortLabel}`;
 
       if (data.shops_without_results && data.shops_without_results.length > 0) {
         shopsStatus.textContent = `Geen resultaten van: ${data.shops_without_results.join(', ')}`;

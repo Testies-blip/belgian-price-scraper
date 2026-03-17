@@ -239,6 +239,12 @@ main {
   margin-top: auto;
 }
 
+.product-card__unit-price {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+}
+
 /* ── No results ── */
 .no-results {
   text-align: center;
