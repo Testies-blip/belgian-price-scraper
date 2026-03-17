@@ -22,6 +22,8 @@
   --coolblue: #0090e3;
   --mediamarkt: #cc0000;
   --fnac: #e1a900;
+  --carrefour: #004b87;
+  --delhaize: #e4002b;
 }
 
 body {
@@ -221,6 +223,8 @@ main {
 .shop-badge--coolblue { background: var(--coolblue); }
 .shop-badge--mediamarkt { background: var(--mediamarkt); }
 .shop-badge--fnac { background: var(--fnac); color: #1a202c; }
+.shop-badge--carrefour { background: var(--carrefour); }
+.shop-badge--delhaize { background: var(--delhaize); }
 
 .product-card__title {
   font-size: 0.9rem;

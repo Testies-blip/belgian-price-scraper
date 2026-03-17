@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -12,7 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from scrapers.amazon import scrape_amazon
 from scrapers.base import extract_quantity
 from scrapers.bol import scrape_bol
+from scrapers.carrefour import scrape_carrefour
 from scrapers.coolblue import scrape_coolblue
+from scrapers.delhaize import scrape_delhaize
 from scrapers.fnac import scrape_fnac
 from scrapers.mediamarkt import scrape_mediamarkt
 
@@ -30,7 +33,7 @@ async def index():
     return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 
-ALL_SHOPS = ["bol.com", "Amazon", "Coolblue", "MediaMarkt", "Fnac"]
+ALL_SHOPS = ["bol.com", "Amazon", "Coolblue", "MediaMarkt", "Fnac", "Carrefour", "Delhaize"]
 
 
 @app.get("/search")
@@ -49,6 +52,8 @@ async def search(q: str = Query(..., min_length=1, max_length=200)):
         scrape_coolblue(query),
         scrape_mediamarkt(query),
         scrape_fnac(query),
+        scrape_carrefour(query),
+        scrape_delhaize(query),
         return_exceptions=True,
     )
 
@@ -62,6 +67,23 @@ async def search(q: str = Query(..., min_length=1, max_length=200)):
                 shops_with_results.add(r.shop)
         elif isinstance(task_result, Exception):
             logger.error("Scraper raised exception: %s", task_result)
+
+    # Relevance filter: some shops (e.g. supermarkets) return featured/popular
+    # products when their search doesn't match anything.  Keep only results where
+    # at least one meaningful query word (length ≥ 4) appears in the product title.
+    # If the query has no words ≥ 4 chars we skip the filter entirely.
+    significant_words = [w.lower() for w in re.split(r"\W+", query) if len(w) >= 4]
+    if significant_words:
+        before = len(merged)
+        merged = [
+            r for r in merged
+            if any(w in r.title.lower() for w in significant_words)
+        ]
+        dropped = before - len(merged)
+        if dropped:
+            logger.info("Relevance filter dropped %d off-topic results", dropped)
+        # Re-derive shops_with_results after filtering
+        shops_with_results = {r.shop for r in merged}
 
     # Enrich each result with quantity and per-unit price
     has_per_unit = False

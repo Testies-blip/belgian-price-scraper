@@ -18,6 +18,8 @@ const SHOP_SLUG = {
   'Coolblue': 'coolblue',
   'MediaMarkt': 'mediamarkt',
   'Fnac': 'fnac',
+  'Carrefour': 'carrefour',
+  'Delhaize': 'delhaize',
 };
 
 function formatPrice(eur) {
