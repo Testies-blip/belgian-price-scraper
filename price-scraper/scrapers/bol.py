@@ -12,38 +12,53 @@ logger = logging.getLogger(__name__)
 
 # JS that runs inside the page to extract all product data in one pass.
 # Bol.com uses data-bltgh/data-bltgi tracking attributes instead of data-test.
+#
+# Strategy: TOP-DOWN — find card containers first via data-bltgi, then query
+# title/image/price WITHIN each card. This avoids the mismatch that occurs
+# when walking UP from a title link lands on a shared parent container that
+# spans multiple cards (causing image/price from card N to appear with card M's title).
 _EXTRACT_JS = """
 () => {
-    const links = Array.from(document.querySelectorAll('a[data-bltgh*="ProductTitle"]'));
-    return links.slice(0, 12).map(link => {
-        // Walk up to find the card container (div with data-bltgi ending in ProductList_Middle.N)
-        let card = link.parentElement;
-        for (let i = 0; i < 12 && card; i++) {
-            if (card.dataset && card.dataset.bltgi &&
-                /ProductList_Middle\\.\\d+$/.test(card.dataset.bltgi)) break;
-            card = card.parentElement;
-        }
-        const cardText = card ? card.innerText : '';
+    // Find every element whose data-bltgi ends with "ProductList_Middle.<number>"
+    const allEls = Array.from(document.querySelectorAll('[data-bltgi]'));
+    const candidates = allEls.filter(el =>
+        /\\.ProductList_Middle\\.\\d+$/.test(el.dataset.bltgi || '')
+    );
 
-        // Price: find all decimal numbers (Belgian format), pick first with integer part >= 1
-        // to skip per-unit micro-prices like €0,32/luier shown below the package price.
-        const allPrices = [...cardText.matchAll(/(\\d+)[,\\.](\\d{2})(?!\\d)/g)];
-        const priceEntry = allPrices.find(m => parseInt(m[1], 10) >= 1);
-        const priceMatch = priceEntry || null;
+    // Keep only the OUTERMOST matching elements (discard any that are
+    // descendants of another match) so we get one element per product card.
+    const cards = candidates.filter(card =>
+        !candidates.some(other => other !== card && other.contains(card))
+    );
 
-        // Image
-        const img = card ? card.querySelector('img[src*="media.s-bol"]') || card.querySelector('img') : null;
-
-        // Stock: absence of negative phrases = in stock
+    return cards.slice(0, 12).map(card => {
+        const cardText = card.innerText || '';
         const lower = cardText.toLowerCase();
+
+        // Stock check
         const outOfStock = lower.includes('niet op voorraad') ||
                            lower.includes('binnenkort beschikbaar') ||
                            lower.includes('tijdelijk uitverkocht');
 
+        // Title + link — the ProductTitle anchor lives INSIDE this card
+        const titleLink = card.querySelector('a[data-bltgh*="ProductTitle"]');
+        const title = titleLink ? titleLink.innerText.trim() : null;
+        const href  = titleLink ? titleLink.href : null;
+
+        // Image — prefer the ProductImage anchor's img; fall back to any bol-media img
+        const imgAnchor = card.querySelector('a[data-bltgh*="ProductImage"]');
+        const img = imgAnchor
+            ? (imgAnchor.querySelector('img[src*="media.s-bol"]') || imgAnchor.querySelector('img'))
+            : (card.querySelector('img[src*="media.s-bol"]') || card.querySelector('img'));
+
+        // Price: find all x,xx or x.xx numbers, skip sub-€1 per-unit prices
+        const allPrices = [...cardText.matchAll(/(\\d+)[,\\.](\\d{2})(?!\\d)/g)];
+        const priceEntry = allPrices.find(m => parseInt(m[1], 10) >= 1);
+
         return {
-            title: link.innerText.trim(),
-            href: link.href,
-            price_str: priceMatch ? (priceMatch[1] + '.' + priceMatch[2]) : null,
+            title,
+            href,
+            price_str: priceEntry ? (priceEntry[1] + '.' + priceEntry[2]) : null,
             image_url: img ? img.src : null,
             out_of_stock: outOfStock
         };
