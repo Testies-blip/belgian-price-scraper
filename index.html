@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photo to Embroidery DST</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Photo &rarr; Embroidery <span class="badge">DST</span></h1>
+      <p class="subtitle">Drop a photo and export a .DST file for Bernina DesignerPlus</p>
+    </header>
+
+    <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="Drop image here or click to browse">
+      <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+      <div class="drop-zone-inner">
+        <svg class="drop-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="8" y="14" width="48" height="36" rx="4" stroke="currentColor" stroke-width="2.5"/>
+          <circle cx="22" cy="26" r="5" stroke="currentColor" stroke-width="2.5"/>
+          <path d="M8 40 L20 28 L32 38 L42 30 L56 40" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/>
+          <path d="M32 52 L32 62 M26 58 L32 64 L38 58" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <p class="drop-label">Drop JPG or PNG here</p>
+        <p class="drop-hint">or <span class="link-text">click to browse</span></p>
+      </div>
+    </div>
+
+    <div id="preview-section" class="preview-section hidden">
+      <div class="preview-panel">
+        <h3>Original</h3>
+        <canvas id="original-canvas"></canvas>
+      </div>
+      <div class="preview-panel">
+        <h3>Quantized preview</h3>
+        <canvas id="quantized-canvas"></canvas>
+        <div id="palette-swatches" class="palette-swatches"></div>
+      </div>
+    </div>
+
+    <details id="settings" class="settings">
+      <summary>Settings</summary>
+      <div class="settings-grid">
+        <label>
+          Width
+          <span class="hint">mm</span>
+          <input type="number" id="width-mm" value="100" min="10" max="500" step="1">
+        </label>
+        <label>
+          Colors
+          <span class="hint">2–16</span>
+          <input type="number" id="num-colors" value="6" min="2" max="16" step="1">
+        </label>
+        <label>
+          Row density
+          <span class="hint">mm</span>
+          <input type="number" id="density-mm" value="0.4" min="0.2" max="2.0" step="0.1">
+        </label>
+        <label>
+          Stitch length
+          <span class="hint">mm</span>
+          <input type="number" id="stitch-mm" value="3.0" min="1.0" max="6.0" step="0.5">
+        </label>
+      </div>
+    </details>
+
+    <div class="export-bar">
+      <button id="export-btn" class="export-btn" disabled>Export .DST</button>
+      <span id="status" class="status">Load an image to get started</span>
+    </div>
+  </div>
+
+  <script src="js/quantize.js"></script>
+  <script src="js/stitcher.js"></script>
+  <script src="js/dst.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
