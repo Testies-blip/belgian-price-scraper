@@ -150,6 +150,16 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   flex-shrink: 0;
   transition: opacity 0.15s;
 }
+.swatch-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.swatch-info--skip { opacity: 0.5; }
+.swatch-name {
+  font-size: 0.73rem;
+  color: var(--text);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.swatch-info--skip .swatch-name { text-decoration: line-through; }
+.swatch-pct { font-size: 0.68rem; color: var(--muted); line-height: 1.2; }
 
 /* Stitch canvas — crosshair gum cursor */
 .preview-panel--stitch canvas {

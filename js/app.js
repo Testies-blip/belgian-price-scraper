@@ -118,10 +118,11 @@ function runQuantize(img) {
         if (total > 0 && bgCount / total >= 0.25) skipColors.add(bgIdx);
       }
 
-      lastQuantResult = { palette, indexMap, width: canvas.width, height: canvas.height };
+      const colorNames = palette.map(namedColorOf);
+      lastQuantResult = { palette, indexMap, width: canvas.width, height: canvas.height, colorNames };
 
       drawQuantizedPreview(palette, indexMap, canvas.width, canvas.height, skipColors);
-      renderSwatches(palette, indexMap, skipColors);
+      renderSwatches(palette, indexMap, skipColors, colorNames);
       updateStitchPreview();
 
       previewSection.classList.remove('hidden');
@@ -196,7 +197,7 @@ function drawQuantizedPreview(palette, indexMap, w, h, skippedColors) {
   ctx.putImageData(out, 0, 0);
 }
 
-function renderSwatches(palette, indexMap, skippedColors) {
+function renderSwatches(palette, indexMap, skippedColors, colorNames = []) {
   const counts = new Array(palette.length).fill(0);
   for (const idx of indexMap) { if (idx < palette.length) counts[idx]++; }
   const total = counts.reduce((a, b) => a + b, 0);
@@ -205,13 +206,19 @@ function renderSwatches(palette, indexMap, skippedColors) {
   palette.forEach(([r, g, b], i) => {
     const pct     = total > 0 ? Math.round((counts[i] / total) * 100) : 0;
     const skipped = skippedColors.has(i);
+    const name    = colorNames[i] || '';
     const div = document.createElement('div');
     div.className = 'swatch' + (skipped ? ' swatch--skipped' : '');
-    div.title = skipped ? 'Click to restore thread' : 'Click to remove thread';
+    div.title = name
+      ? `${name} — ${skipped ? 'click to restore' : 'click to remove'}`
+      : (skipped ? 'Click to restore thread' : 'Click to remove thread');
     div.dataset.colorIdx = i;
     div.innerHTML = `
       <span class="swatch-color" style="background:rgb(${r},${g},${b});${skipped ? 'opacity:0.35' : ''}"></span>
-      <span style="${skipped ? 'text-decoration:line-through;opacity:0.5' : ''}">${pct}%</span>`;
+      <span class="swatch-info${skipped ? ' swatch-info--skip' : ''}">
+        ${name ? `<span class="swatch-name">${name}</span>` : ''}
+        <span class="swatch-pct">${pct}%</span>
+      </span>`;
     swatchContainer.appendChild(div);
   });
 }
@@ -229,9 +236,9 @@ function toggleColor(ci) {
   } else {
     skipColors.add(ci);
   }
-  const { palette, indexMap, width, height } = lastQuantResult;
+  const { palette, indexMap, width, height, colorNames = [] } = lastQuantResult;
   drawQuantizedPreview(palette, indexMap, width, height, skipColors);
-  renderSwatches(palette, indexMap, skipColors);
+  renderSwatches(palette, indexMap, skipColors, colorNames);
   updateStitchPreview();
   setStatus('Preview updated');
 }
@@ -358,6 +365,9 @@ function applyRequest(text) {
   const intLoose   = /\b(looser|coarser|sparser|wider\s*rows?|spread\s*out|less\s*dense|rougher)\b/.test(t);
   const intLonger  = /\b(longer|bigger\s*stitch|larger\s*stitch|extend\s*stitch)\b/.test(t);
   const intShorter = /\b(shorter|smaller\s*stitch|tinier|fine\s*stitch|mini)\b/.test(t);
+  // Magnitude modifiers
+  const intSlight  = /\b(slightly|a\s+bit|a\s+little|somewhat|marginally|gently|just\s+a\s+(bit|little))\b/.test(t);
+  const intMuch    = /\b(much|a\s+lot|very|really|significantly|considerably|substantially|way\b)\b/.test(t);
 
   // ── Subject signals ─────────────────────────────────────────────────────────
   const subBackground = /\b(background|bg|backdrop|back\s*ground)\b/.test(t);
@@ -409,12 +419,14 @@ function applyRequest(text) {
       changes.push(`colors → ${v}`);
       needsRequantize = true;
     } else if (intUp) {
-      const v = clampInt(Number(colorsInput.value) + 2, 2, 16);
+      const step = intSlight ? 1 : intMuch ? 4 : 2;
+      const v = clampInt(Number(colorsInput.value) + step, 2, 16);
       colorsInput.value = v;
       changes.push(`colors → ${v}`);
       needsRequantize = true;
     } else if (intDown) {
-      const v = clampInt(Number(colorsInput.value) - 2, 2, 16);
+      const step = intSlight ? 1 : intMuch ? 4 : 2;
+      const v = clampInt(Number(colorsInput.value) - step, 2, 16);
       colorsInput.value = v;
       changes.push(`colors → ${v}`);
       needsRequantize = true;
@@ -430,12 +442,14 @@ function applyRequest(text) {
     needsRequantize = true;
   } else if (!subColors && !subDensity && !subStitch && (subSize || intBigger || intSmaller)) {
     if (intBigger || (intUp && subSize)) {
-      const v = Math.min(500, Math.round(Number(widthInput.value) * 1.25));
+      const factor = intSlight ? 1.1 : intMuch ? 1.5 : 1.25;
+      const v = Math.min(500, Math.round(Number(widthInput.value) * factor));
       widthInput.value = v;
       changes.push(`width → ${v} mm`);
       needsRequantize = true;
     } else if (intSmaller || (intDown && subSize)) {
-      const v = Math.max(10, Math.round(Number(widthInput.value) * 0.75));
+      const factor = intSlight ? 0.9 : intMuch ? 0.65 : 0.75;
+      const v = Math.max(10, Math.round(Number(widthInput.value) * factor));
       widthInput.value = v;
       changes.push(`width → ${v} mm`);
       needsRequantize = true;
@@ -451,13 +465,17 @@ function applyRequest(text) {
       densityInput.value = v.toFixed(1);
       changes.push(`density → ${v.toFixed(1)} mm`);
     } else if (intFiner || (subDensity && (intUp || intDown && !intLoose))) {
-      // "more dense" = smaller pitch number
-      const dir = (intFiner || (subDensity && intDown)) ? 0.7 : 1.4;
+      // "more dense" = smaller pitch number; apply magnitude
+      const isFiner = intFiner || (subDensity && intDown);
+      const dir = isFiner
+        ? (intSlight ? 0.9 : intMuch ? 0.5 : 0.7)
+        : (intSlight ? 1.1 : intMuch ? 2.0 : 1.4);
       const v = Math.max(0.2, Math.min(2.0, parseFloat((Number(densityInput.value) * dir).toFixed(1))));
       densityInput.value = v;
       changes.push(`density → ${v} mm`);
     } else if (intLoose || (subDensity && intUp)) {
-      const v = Math.min(2.0, parseFloat((Number(densityInput.value) * 1.4).toFixed(1)));
+      const factor = intSlight ? 1.1 : intMuch ? 2.0 : 1.4;
+      const v = Math.min(2.0, parseFloat((Number(densityInput.value) * factor).toFixed(1)));
       densityInput.value = v;
       changes.push(`density → ${v} mm`);
     }
@@ -471,11 +489,13 @@ function applyRequest(text) {
       stitchInput.value = v.toFixed(1);
       changes.push(`stitch length → ${v.toFixed(1)} mm`);
     } else if (intLonger || (subStitch && intUp)) {
-      const v = Math.min(6.0, parseFloat((Number(stitchInput.value) * 1.3).toFixed(1)));
+      const factor = intSlight ? 1.1 : intMuch ? 1.6 : 1.3;
+      const v = Math.min(6.0, parseFloat((Number(stitchInput.value) * factor).toFixed(1)));
       stitchInput.value = v;
       changes.push(`stitch length → ${v} mm`);
     } else if (intShorter || (subStitch && intDown)) {
-      const v = Math.max(1.0, parseFloat((Number(stitchInput.value) * 0.7).toFixed(1)));
+      const factor = intSlight ? 0.9 : intMuch ? 0.5 : 0.7;
+      const v = Math.max(1.0, parseFloat((Number(stitchInput.value) * factor).toFixed(1)));
       stitchInput.value = v;
       changes.push(`stitch length → ${v} mm`);
     }
@@ -497,6 +517,67 @@ function applyRequest(text) {
       angleInput.value = v;
       changes.push(`fill angle → ${v}°`);
       previewOnly = true;
+    }
+  }
+
+  // ── Color-name targeting ──────────────────────────────────────────────────────
+  // e.g. "remove the blue", "erase red threads", "keep only green and white"
+  if (lastQuantResult && lastQuantResult.colorNames) {
+    const colorNames = lastQuantResult.colorNames;
+    // Check all family keys (+ "grey" alias) for word-boundary matches
+    const ALL_FAMILY_KEYS = [...Object.keys(COLOR_FAMILIES), 'grey'];
+    const foundFamilies = ALL_FAMILY_KEYS.filter(k =>
+      new RegExp('\\b' + k + '\\b', 'i').test(t)
+    ).map(f => f === 'grey' ? 'gray' : f);  // normalise grey → gray
+
+    // Don't double-fire if the background handler already handled this intent
+    const backgroundHandled = changes.some(c => c.includes('background'));
+
+    if (foundFamilies.length > 0 && !backgroundHandled) {
+      // Collect palette indices matching ANY spoken color word
+      const matchedIndices = new Set();
+      foundFamilies.forEach(w =>
+        paletteIndicesForColorWord(w, colorNames).forEach(i => matchedIndices.add(i))
+      );
+
+      const keepOnly = /\b(keep\s+only|only\s+keep|show\s+only|only\s+show|just\s+keep|keep\s+just)\b/.test(t) ||
+                       (/\bonly\b/.test(t) && intRestore && !intRemove);
+
+      if (matchedIndices.size > 0) {
+        if (keepOnly) {
+          skipColors.clear();
+          colorNames.forEach((_, i) => { if (!matchedIndices.has(i)) skipColors.add(i); });
+          changes.push(`kept only ${[...new Set(foundFamilies)].join(', ')}`);
+          previewOnly = true;
+        } else if (intRemove && !intRestore) {
+          matchedIndices.forEach(i => skipColors.add(i));
+          changes.push(`removed ${[...new Set(foundFamilies)].join(', ')}`);
+          previewOnly = true;
+        } else if (intRestore && !intRemove) {
+          matchedIndices.forEach(i => skipColors.delete(i));
+          changes.push(`restored ${[...new Set(foundFamilies)].join(', ')}`);
+          previewOnly = true;
+        }
+      }
+    }
+  }
+
+  // ── Thread index targeting ────────────────────────────────────────────────────
+  // e.g. "remove thread 3", "restore color 1" (1-based user numbering)
+  const threadIdxM = t.match(/\b(?:thread|colou?r|swatch)\s+#?(\d+)\b/i);
+  if (threadIdxM && lastQuantResult && (intRemove || intRestore)) {
+    const userIdx = parseInt(threadIdxM[1], 10);
+    const ci = userIdx - 1;   // convert 1-based → 0-based
+    if (ci >= 0 && ci < lastQuantResult.palette.length) {
+      if (intRemove) {
+        skipColors.add(ci);
+        changes.push(`removed thread ${userIdx}`);
+        previewOnly = true;
+      } else {
+        skipColors.delete(ci);
+        changes.push(`restored thread ${userIdx}`);
+        previewOnly = true;
+      }
     }
   }
 
@@ -535,9 +616,9 @@ function applyRequest(text) {
     if (needsRequantize) {
       runQuantize(loadedImage);
     } else if (previewOnly && lastQuantResult) {
-      const { palette, indexMap, width, height } = lastQuantResult;
+      const { palette, indexMap, width, height, colorNames = [] } = lastQuantResult;
       drawQuantizedPreview(palette, indexMap, width, height, skipColors);
-      renderSwatches(palette, indexMap, skipColors);
+      renderSwatches(palette, indexMap, skipColors, colorNames);
       updateStitchPreview();
       exportBtn.disabled = false;
       setStatus('Preview updated');
@@ -715,10 +796,13 @@ function applySnapshot(snap) {
   snap.skipColors.forEach(ci => skipColors.add(ci));
   outlineOnly = snap.outlineOnly;
   if (snap.quantResult) {
-    lastQuantResult = snap.quantResult;
-    const { palette, indexMap, width, height } = lastQuantResult;
+    lastQuantResult = {
+      ...snap.quantResult,
+      colorNames: snap.quantResult.palette.map(namedColorOf),
+    };
+    const { palette, indexMap, width, height, colorNames } = lastQuantResult;
     drawQuantizedPreview(palette, indexMap, width, height, skipColors);
-    renderSwatches(palette, indexMap, skipColors);
+    renderSwatches(palette, indexMap, skipColors, colorNames);
     updateStitchPreview();
     previewSection.classList.remove('hidden');
     requestBox.classList.remove('hidden');
