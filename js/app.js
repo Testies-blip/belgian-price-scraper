@@ -55,6 +55,7 @@ let loadedImage     = null;   // HTMLImageElement
 let currentFile     = null;   // File object (for filename)
 let lastQuantResult = null;   // { palette, indexMap, width, height } cached after quantize
 let lastSegResult   = null;   // SegmentResult from segmenter.js (or null)
+let _segGeneration  = 0;      // incremented each time segmentation is kicked off
 let skipColors      = new Set();  // color indices excluded from stitching
 let outlineOnly     = false;      // stitch outlines instead of fills
 
@@ -155,6 +156,7 @@ function runQuantize(img) {
       requestBox.classList.remove('hidden');
       exportBtn.disabled = false;
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
+      lastSegResult = null;          // invalidate any stale segmentation from previous quantize
       triggerSegmentation(canvas);   // async, non-blocking
     } catch (err) {
       setStatus('Error: ' + err.message, 'error');
@@ -611,8 +613,16 @@ function applyRequest(text) {
   // ── Body-part region commands ─────────────────────────────────────────────────
   // e.g. "the pants of the man are to be 1 color", "make the jacket 2 colours",
   //      "pants are blue", "jacket should be green"
-  // Gated on segmentation having completed successfully.
-  if (lastSegResult && lastSegResult.personFound && lastQuantResult) {
+  // Gated on segmentation having completed successfully AND dimensions matching.
+  const _segReady = lastSegResult && lastSegResult.personFound && lastQuantResult &&
+    lastSegResult.partMap.length === lastQuantResult.indexMap.length;
+
+  if (_segReady) {
+    // Compute total opaque pixel count once (used for coverage %)
+    const _totalOpaque = lastQuantResult.indexMap.reduce(
+      (n, c) => n + (c < lastQuantResult.palette.length ? 1 : 0), 0
+    );
+
     // Pattern A — reduce a region to N colours
     const regionCountM = t.match(_REGION_COUNT_RE);
     if (regionCountM) {
@@ -622,14 +632,20 @@ function applyRequest(text) {
       if (group) {
         const regionPixels = getRegionPixels(groupPartIds, lastSegResult);
         if (regionPixels.size > 0) {
+          const coverage = _totalOpaque > 0
+            ? Math.round(regionPixels.size / _totalOpaque * 100) : 0;
           const { mergedCount } = mergeRegionColors(
             lastQuantResult.indexMap, regionPixels,
             lastQuantResult.palette, targetN, null, lastQuantResult.colorNames
           );
           const label = PART_LABELS[group] || group;
+          // Always show coverage so the user can tell if detection was accurate
+          const coverageNote = coverage > 55
+            ? ` (⚠ ${coverage}% of image — detection may be imprecise)`
+            : ` (${coverage}% of image)`;
           changes.push(mergedCount > 0
-            ? `${label} → ${targetN} color${targetN !== 1 ? 's' : ''}`
-            : `${label} already ≤ ${targetN} color${targetN !== 1 ? 's' : ''}`);
+            ? `${label} → ${targetN} color${targetN !== 1 ? 's' : ''}${coverageNote}`
+            : `${label} already ≤ ${targetN} color${targetN !== 1 ? 's' : ''}${coverageNote}`);
           previewOnly = true;
         } else {
           showFeedback(`No "${PART_LABELS[group] || group}" region detected — try a clearer photo.`, 'err');
@@ -649,13 +665,18 @@ function applyRequest(text) {
           if (group) {
             const regionPixels = getRegionPixels(groupPartIds, lastSegResult);
             if (regionPixels.size > 0) {
+              const coverage = _totalOpaque > 0
+                ? Math.round(regionPixels.size / _totalOpaque * 100) : 0;
               const { mergedCount, keptIndices } = mergeRegionColors(
                 lastQuantResult.indexMap, regionPixels,
                 lastQuantResult.palette, 1, colorWord, lastQuantResult.colorNames
               );
               const label = PART_LABELS[group] || group;
               if (mergedCount > 0 || keptIndices.length > 0) {
-                changes.push(`${label} → ${colorWord}`);
+                const coverageNote = coverage > 55
+                  ? ` (⚠ ${coverage}% of image — detection may be imprecise)`
+                  : ` (${coverage}% of image)`;
+                changes.push(`${label} → ${colorWord}${coverageNote}`);
                 previewOnly = true;
               } else {
                 showFeedback(`Couldn't find "${colorWord}" in the ${label} region.`, 'err');
@@ -665,6 +686,11 @@ function applyRequest(text) {
         }
       }
     }
+  } else if (lastSegResult && !lastSegResult.personFound && lastQuantResult &&
+             (_REGION_COUNT_RE.test(t) || _REGION_COLOR_RE.test(t))) {
+    if (lastQuantResult) { undoStack.pop(); updateUndoRedoBtns(); }
+    showFeedback('No person was detected in this image — body-part commands are unavailable.', 'err');
+    return;
   } else if (lastQuantResult && !lastSegResult &&
              (_REGION_COUNT_RE.test(t) || _REGION_COLOR_RE.test(t))) {
     // Segmentation not yet ready — revert speculative undo push and inform user
@@ -862,10 +888,25 @@ async function triggerSegmentation(canvas) {
   // Guard: CDN scripts may not be available (e.g. offline or file:// without network)
   if (typeof bodyPix === 'undefined') return;
 
+  // Capture this invocation's generation so we can detect if a newer call superseded us
+  const gen = ++_segGeneration;
   showSegStatus('running', 'Recognising figure\u2026', []);
 
   try {
     const result = await segmentImage(canvas);   // from segmenter.js
+
+    // Discard if a newer quantize + segmentation has been triggered while we awaited
+    if (gen !== _segGeneration) return;
+
+    // Validate that the partMap dimensions still match the current indexMap.
+    // They can diverge when the user changes Width/Colors while segmentation is in flight.
+    if (lastQuantResult &&
+        (result.width !== lastQuantResult.width || result.height !== lastQuantResult.height)) {
+      console.warn('[app] partMap dimensions mismatch indexMap — discarding stale segmentation');
+      showSegStatus('none', 'Recognition outdated — reload image to re-detect', []);
+      return;
+    }
+
     lastSegResult = result;
 
     if (!result.personFound) {
@@ -877,6 +918,7 @@ async function triggerSegmentation(canvas) {
     showSegStatus('done', 'Person detected:', groups.map(g => g.label));
 
   } catch (err) {
+    if (gen !== _segGeneration) return;   // superseded — ignore the error too
     console.warn('[app] Segmentation failed:', err);
     lastSegResult = null;
     showSegStatus('none', 'Recognition unavailable', []);

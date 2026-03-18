@@ -39,8 +39,8 @@ async function _loadBodyPix() {
   _loadPromise = bodyPix.load({
     architecture: 'MobileNetV1',
     outputStride: 16,
-    multiplier:   0.75,
-    quantBytes:   2,        // 2-byte weights: ~4 MB; fast on CPU
+    multiplier:   1.0,      // larger multiplier = better part boundaries
+    quantBytes:   2,        // 2-byte weights: ~6 MB; fast on CPU
   }).then(model => {
     _bodyPixModel = model;
     _loadPromise  = null;
@@ -81,9 +81,11 @@ async function segmentImage(canvas) {
   const model = await _loadBodyPix();
 
   const seg = await model.segmentPersonParts(canvas, {
-    internalResolution:    'medium',   // ~0.5× input: good speed/accuracy balance
-    segmentationThreshold: 0.5,
-    scoreThreshold:        0.3,
+    // 'full' = run at input resolution, no downscaling — best accuracy on small canvases
+    // (our working canvas is typically 250–500 px wide, so downscaling would hurt quality)
+    internalResolution:    'full',
+    segmentationThreshold: 0.55,   // slightly stricter: fewer stray background pixels
+    scoreThreshold:        0.4,    // require higher pose confidence before labelling parts
   });
 
   // Align segmentation output to our working canvas dimensions
