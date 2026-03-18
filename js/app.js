@@ -811,12 +811,42 @@ function renderStitchPreview(records, palette, colorOrder, w, h) {
 
   if (colorOrder.length === 0) return;
 
-  // Draw stitches, batched by color phase for performance
+  // ── Pass 1: jump moves as thin dashed gray lines ───────────────────────────
+  // DST viewers (e.g. Bernina Designer) show needle-travel paths between
+  // stitching regions.  Rendering them here keeps the preview in sync.
+  {
+    ctx.save();
+    ctx.setLineDash([3, 4]);
+    ctx.lineWidth   = 0.6;
+    ctx.strokeStyle = 'rgba(150,150,150,0.45)';
+    ctx.lineCap     = 'butt';
+    ctx.beginPath();
+    let jx = 0, jy = 0, wasJump = false;
+    for (const rec of records) {
+      if (rec.type === 'END') break;
+      if (rec.type === 'COLOR_CHANGE') { wasJump = false; continue; }
+      const cx = rec.x / 2;
+      const cy = h - 1 - rec.y / 2;
+      if (rec.type === 'JUMP') {
+        if (!wasJump) ctx.moveTo(jx, jy);   // start jump path from last needle pos
+        ctx.lineTo(cx, cy);
+        wasJump = true;
+      } else {
+        wasJump = false;
+      }
+      jx = cx; jy = cy;
+    }
+    ctx.stroke();
+    ctx.restore();  // also clears setLineDash
+  }
+
+  // ── Pass 2: actual stitches as solid coloured lines ────────────────────────
   let phase      = 0;
   let prevX      = 0;
   let prevY      = 0;
   let prevIsJump = true; // true = previous position came from a JUMP (start fresh sub-path)
 
+  ctx.setLineDash([]);   // ensure solid lines (restore guard)
   ctx.lineWidth  = 1.2;
   ctx.lineCap    = 'round';
   ctx.lineJoin   = 'round';
