@@ -31,6 +31,7 @@ const segIcon         = document.getElementById('seg-icon');
 const segText         = document.getElementById('seg-text');
 const segParts        = document.getElementById('seg-parts');
 const eraseBtn        = document.getElementById('erase-btn');
+const copyNeighborBtn = document.getElementById('copy-neighbor-btn');
 const eraseOverlay    = document.getElementById('erase-overlay');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
@@ -60,8 +61,9 @@ let lastSegResult   = null;   // SegmentResult from segmenter.js (or null)
 let _segGeneration  = 0;      // incremented each time segmentation is kicked off
 let skipColors      = new Set();  // color indices excluded from stitching
 let outlineOnly     = false;      // stitch outlines instead of fills
-let eraseAreaMode   = false;      // true while the drag-to-erase tool is active
-let _eraseDrag      = null;       // { startX, startY, rect, scaleX, scaleY } while dragging
+let eraseAreaMode     = false;    // true while the drag-to-erase tool is active
+let copyNeighborMode  = false;    // true while the fill-neighbor tool is active
+let _eraseDrag        = null;     // { startX, startY, rect, scaleX, scaleY } while dragging
 
 // ── Undo / redo state ─────────────────────────────────────────────────────────
 const MAX_UNDO  = 20;
@@ -98,8 +100,10 @@ function handleFile(file) {
   outlineOnly = false;
   lastSegResult = null;
   segStatus.classList.add('hidden');
-  eraseAreaMode = false;
+  eraseAreaMode    = false;
+  copyNeighborMode = false;
   eraseBtn.classList.remove('active');
+  copyNeighborBtn.classList.remove('active');
   eraseOverlay.classList.remove('active');
   _eraseDrag = null;
   clearEraseOverlay();
@@ -128,8 +132,9 @@ function renderOriginal(img) {
 
 function runQuantize(img) {
   setStatus('Quantizing…');
-  exportBtn.disabled = true;
-  eraseBtn.disabled  = true;
+  exportBtn.disabled       = true;
+  eraseBtn.disabled        = true;
+  copyNeighborBtn.disabled = true;
 
   setTimeout(() => {
     try {
@@ -164,8 +169,9 @@ function runQuantize(img) {
 
       previewSection.classList.remove('hidden');
       requestBox.classList.remove('hidden');
-      exportBtn.disabled = false;
-      eraseBtn.disabled  = false;
+      exportBtn.disabled       = false;
+      eraseBtn.disabled        = false;
+      copyNeighborBtn.disabled = false;
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
       lastSegResult = null;          // invalidate any stale segmentation from previous quantize
       triggerSegmentation(canvas);   // async, non-blocking
@@ -926,8 +932,28 @@ function showFeedback(msg, cls) {
 eraseBtn.addEventListener('click', () => {
   eraseAreaMode = !eraseAreaMode;
   eraseBtn.classList.toggle('active', eraseAreaMode);
-  eraseOverlay.classList.toggle('active', eraseAreaMode);
+  // Two tools are mutually exclusive
+  if (eraseAreaMode && copyNeighborMode) {
+    copyNeighborMode = false;
+    copyNeighborBtn.classList.remove('active');
+  }
+  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode);
   if (!eraseAreaMode) {
+    _eraseDrag = null;
+    clearEraseOverlay();
+  }
+});
+
+copyNeighborBtn.addEventListener('click', () => {
+  copyNeighborMode = !copyNeighborMode;
+  copyNeighborBtn.classList.toggle('active', copyNeighborMode);
+  // Two tools are mutually exclusive
+  if (copyNeighborMode && eraseAreaMode) {
+    eraseAreaMode = false;
+    eraseBtn.classList.remove('active');
+  }
+  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode);
+  if (!copyNeighborMode) {
     _eraseDrag = null;
     clearEraseOverlay();
   }
@@ -938,7 +964,7 @@ eraseBtn.addEventListener('click', () => {
  * subsequent mousemove events don't need to recompute them on every pixel move.
  */
 eraseOverlay.addEventListener('mousedown', e => {
-  if (!eraseAreaMode || !lastQuantResult) return;
+  if ((!eraseAreaMode && !copyNeighborMode) || !lastQuantResult) return;
   const rect   = eraseOverlay.getBoundingClientRect();
   const scaleX = lastQuantResult.width  / rect.width;
   const scaleY = lastQuantResult.height / rect.height;
@@ -954,34 +980,40 @@ eraseOverlay.addEventListener('mousedown', e => {
  * Update the selection rectangle while the mouse moves (even outside the overlay).
  */
 document.addEventListener('mousemove', e => {
-  if (!_eraseDrag || !eraseAreaMode) return;
+  if (!_eraseDrag || (!eraseAreaMode && !copyNeighborMode)) return;
   const { startX, startY, rect, scaleX, scaleY } = _eraseDrag;
   const curX = Math.round((e.clientX - rect.left) * scaleX);
   const curY = Math.round((e.clientY - rect.top)  * scaleY);
-  drawEraseRect(startX, startY, curX, curY);
+  drawEraseRect(startX, startY, curX, curY, eraseAreaMode);
 });
 
 /**
- * Finish the drag: apply the erase if the selection is large enough.
+ * Finish the drag: dispatch to the active tool (erase or fill-neighbor).
  */
 document.addEventListener('mouseup', e => {
-  if (!_eraseDrag || !eraseAreaMode) return;
+  if (!_eraseDrag || (!eraseAreaMode && !copyNeighborMode)) return;
   const { startX, startY, rect, scaleX, scaleY } = _eraseDrag;
   const endX = Math.round((e.clientX - rect.left) * scaleX);
   const endY = Math.round((e.clientY - rect.top)  * scaleY);
+  const wasErase = eraseAreaMode;   // capture before clearing
   _eraseDrag = null;
   clearEraseOverlay();
   // Only act when the user dragged a meaningful area (> 2 px in any direction)
   if (Math.abs(endX - startX) > 2 || Math.abs(endY - startY) > 2) {
-    applyAreaErase(startX, startY, endX, endY);
+    if (wasErase) {
+      applyAreaErase(startX, startY, endX, endY);
+    } else {
+      applyCopyNeighborColor(startX, startY, endX, endY);
+    }
   }
-  // Keep erase mode active — user clicks button again (or Escape) to exit
+  // Keep the active tool mode on — user clicks button again (or Escape) to exit
 });
 
 /**
  * Draw a dashed selection rectangle on the overlay canvas.
+ * @param {boolean} isErase  true → red (erase), false → green (fill-neighbor)
  */
-function drawEraseRect(x1, y1, x2, y2) {
+function drawEraseRect(x1, y1, x2, y2, isErase = true) {
   const ctx = eraseOverlay.getContext('2d');
   ctx.clearRect(0, 0, eraseOverlay.width, eraseOverlay.height);
   const rx = Math.min(x1, x2);
@@ -989,9 +1021,11 @@ function drawEraseRect(x1, y1, x2, y2) {
   const rw = Math.abs(x2 - x1);
   const rh = Math.abs(y2 - y1);
   if (rw < 1 && rh < 1) return;
-  ctx.fillStyle   = 'rgba(231,76,60,0.12)';
+  const fillRgba   = isErase ? 'rgba(231,76,60,0.12)'  : 'rgba(39,174,96,0.12)';
+  const strokeRgba = isErase ? 'rgba(231,76,60,0.9)'   : 'rgba(39,174,96,0.9)';
+  ctx.fillStyle   = fillRgba;
   ctx.fillRect(rx, ry, rw, rh);
-  ctx.strokeStyle = 'rgba(231,76,60,0.9)';
+  ctx.strokeStyle = strokeRgba;
   ctx.lineWidth   = 1.5;
   ctx.setLineDash([4, 3]);
   ctx.strokeRect(rx + 0.5, ry + 0.5, rw, rh);
@@ -1037,6 +1071,87 @@ function applyAreaErase(x1, y1, x2, y2) {
   renderSwatches(palette, indexMap, skipColors, colorNames);
   updateStitchPreview();
   setStatus(`Erased ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
+}
+
+/**
+ * Fill every pixel inside the rectangle with the most common color found in
+ * the 1-pixel ring immediately outside the rectangle's border.
+ *
+ * This effectively "paints over" a selected area with the surrounding color,
+ * making it blend into its background region.
+ *
+ * Coordinates are in working-canvas pixel space (same as indexMap).
+ */
+function applyCopyNeighborColor(x1, y1, x2, y2) {
+  if (!lastQuantResult) return;
+  pushUndo();
+  const { indexMap, width, height, palette, colorNames = [] } = lastQuantResult;
+  const xMin = Math.max(0,         Math.min(x1, x2));
+  const xMax = Math.min(width - 1, Math.max(x1, x2));
+  const yMin = Math.max(0,          Math.min(y1, y2));
+  const yMax = Math.min(height - 1, Math.max(y1, y2));
+
+  // Count color frequencies in the 1-pixel ring just outside the rectangle
+  const colorCounts = new Array(palette.length).fill(0);
+
+  // Top / bottom border rows
+  for (let x = xMin; x <= xMax; x++) {
+    if (yMin > 0) {
+      const ci = indexMap[(yMin - 1) * width + x];
+      if (ci < palette.length) colorCounts[ci]++;
+    }
+    if (yMax < height - 1) {
+      const ci = indexMap[(yMax + 1) * width + x];
+      if (ci < palette.length) colorCounts[ci]++;
+    }
+  }
+  // Left / right border columns (including corners)
+  for (let y = Math.max(0, yMin - 1); y <= Math.min(height - 1, yMax + 1); y++) {
+    if (xMin > 0) {
+      const ci = indexMap[y * width + (xMin - 1)];
+      if (ci < palette.length) colorCounts[ci]++;
+    }
+    if (xMax < width - 1) {
+      const ci = indexMap[y * width + (xMax + 1)];
+      if (ci < palette.length) colorCounts[ci]++;
+    }
+  }
+
+  // Find the most common neighboring color (ignoring transparent / erased pixels)
+  let neighborColor = -1, maxCount = 0;
+  for (let ci = 0; ci < palette.length; ci++) {
+    if (colorCounts[ci] > maxCount) { maxCount = colorCounts[ci]; neighborColor = ci; }
+  }
+
+  if (neighborColor === -1) {
+    undoStack.pop(); updateUndoRedoBtns();
+    setStatus('No neighboring color found — try a larger area or near a colored region');
+    return;
+  }
+
+  // Paint the neighbor color onto every pixel inside the rectangle
+  let changed = 0;
+  for (let y = yMin; y <= yMax; y++) {
+    for (let x = xMin; x <= xMax; x++) {
+      const idx = y * width + x;
+      if (indexMap[idx] !== neighborColor) {
+        indexMap[idx] = neighborColor;
+        changed++;
+      }
+    }
+  }
+
+  if (changed === 0) {
+    undoStack.pop(); updateUndoRedoBtns();
+    setStatus('Area is already that color');
+    return;
+  }
+
+  drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+  renderSwatches(palette, indexMap, skipColors, colorNames);
+  updateStitchPreview();
+  const colorLabel = colorNames[neighborColor] || `color ${neighborColor + 1}`;
+  setStatus(`Filled ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} with ${colorLabel} — Ctrl+Z to undo`);
 }
 
 // ── Segmentation ──────────────────────────────────────────────────────────────
@@ -1242,10 +1357,12 @@ undoBtn.addEventListener('click', undo);
 redoBtn.addEventListener('click', redo);
 
 document.addEventListener('keydown', e => {
-  // Escape exits erase-area mode (and cancels any in-progress drag)
-  if (e.key === 'Escape' && eraseAreaMode) {
-    eraseAreaMode = false;
+  // Escape exits either canvas-tool mode (and cancels any in-progress drag)
+  if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode)) {
+    eraseAreaMode    = false;
+    copyNeighborMode = false;
     eraseBtn.classList.remove('active');
+    copyNeighborBtn.classList.remove('active');
     eraseOverlay.classList.remove('active');
     _eraseDrag = null;
     clearEraseOverlay();

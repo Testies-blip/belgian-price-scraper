@@ -463,3 +463,11 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   color: #c0392b;
 }
 .erase-btn.active:hover { background: #ffe5e3; }
+
+/* Fill Neighbor button gets a green active state to distinguish it from erase (red) */
+#copy-neighbor-btn.active {
+  background: #f0f9f0;
+  border-color: #27ae60;
+  color: #1e8a4a;
+}
+#copy-neighbor-btn.active:hover { background: #e2f5e2; }
