@@ -39,6 +39,17 @@
       </div>
     </div>
 
+    <div id="request-box" class="request-box hidden">
+      <label class="request-label" for="request-input">Request a change</label>
+      <div class="request-row">
+        <input type="text" id="request-input"
+          placeholder='e.g. "use 8 colors", "make it 150mm wide", "finer stitches"'
+          autocomplete="off">
+        <button id="request-btn">Apply</button>
+      </div>
+      <p id="request-feedback" class="request-feedback"></p>
+    </div>
+
     <details id="settings" class="settings">
       <summary>Settings</summary>
       <div class="settings-grid">
@@ -55,12 +66,12 @@
         <label>
           Row density
           <span class="hint">mm</span>
-          <input type="number" id="density-mm" value="0.4" min="0.2" max="2.0" step="0.1">
+          <input type="number" id="density-mm" value="0.3" min="0.2" max="2.0" step="0.1">
         </label>
         <label>
           Stitch length
           <span class="hint">mm</span>
-          <input type="number" id="stitch-mm" value="3.0" min="1.0" max="6.0" step="0.5">
+          <input type="number" id="stitch-mm" value="2.5" min="1.0" max="6.0" step="0.5">
         </label>
       </div>
     </details>

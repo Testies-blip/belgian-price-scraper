@@ -134,6 +134,59 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   flex-shrink: 0;
 }
 
+/* Request box */
+.request-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.request-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.request-row {
+  display: flex;
+  gap: 0.6rem;
+}
+.request-row input[type=text] {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  background: var(--bg);
+  color: var(--text);
+  transition: border-color 0.15s;
+}
+.request-row input[type=text]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.request-row button {
+  padding: 0.5rem 1.1rem;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.request-row button:hover { background: var(--accent-hover); }
+.request-feedback {
+  font-size: 0.85rem;
+  min-height: 1.2em;
+  color: var(--muted);
+}
+.request-feedback.ok  { color: var(--success); }
+.request-feedback.err { color: #c0392b; }
+
 /* Settings */
 .settings {
   background: var(--surface);
