@@ -11,6 +11,7 @@ const previewSection  = document.getElementById('preview-section');
 const origCanvas      = document.getElementById('original-canvas');
 const quantCanvas     = document.getElementById('quantized-canvas');
 const swatchContainer = document.getElementById('palette-swatches');
+const stitchCanvas    = document.getElementById('stitch-canvas');
 const exportBtn       = document.getElementById('export-btn');
 const statusEl        = document.getElementById('status');
 const widthInput      = document.getElementById('width-mm');
@@ -21,6 +22,10 @@ const requestBox      = document.getElementById('request-box');
 const requestInput    = document.getElementById('request-input');
 const requestBtn      = document.getElementById('request-btn');
 const requestFeedback = document.getElementById('request-feedback');
+const angleInput      = document.getElementById('fill-angle');
+const undoBtn         = document.getElementById('undo-btn');
+const redoBtn         = document.getElementById('redo-btn');
+const chipsContainer  = document.getElementById('chips');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let loadedImage     = null;   // HTMLImageElement
@@ -28,6 +33,11 @@ let currentFile     = null;   // File object (for filename)
 let lastQuantResult = null;   // { palette, indexMap, width, height } cached after quantize
 let skipColors      = new Set();  // color indices excluded from stitching
 let outlineOnly     = false;      // stitch outlines instead of fills
+
+// ── Undo / redo state ─────────────────────────────────────────────────────────
+const MAX_UNDO  = 20;
+const undoStack = [];
+const redoStack = [];
 
 // ── Drop zone wiring ──────────────────────────────────────────────────────────
 dropZone.addEventListener('click', () => fileInput.click());
@@ -112,6 +122,7 @@ function runQuantize(img) {
 
       drawQuantizedPreview(palette, indexMap, canvas.width, canvas.height, skipColors);
       renderSwatches(palette, indexMap, skipColors);
+      updateStitchPreview();
 
       previewSection.classList.remove('hidden');
       requestBox.classList.remove('hidden');
@@ -196,13 +207,57 @@ function renderSwatches(palette, indexMap, skippedColors) {
     const skipped = skippedColors.has(i);
     const div = document.createElement('div');
     div.className = 'swatch' + (skipped ? ' swatch--skipped' : '');
-    div.title = skipped ? 'Excluded from stitching' : '';
+    div.title = skipped ? 'Click to restore thread' : 'Click to remove thread';
+    div.dataset.colorIdx = i;
     div.innerHTML = `
       <span class="swatch-color" style="background:rgb(${r},${g},${b});${skipped ? 'opacity:0.35' : ''}"></span>
       <span style="${skipped ? 'text-decoration:line-through;opacity:0.5' : ''}">${pct}%</span>`;
     swatchContainer.appendChild(div);
   });
 }
+
+// ── Gum (thread toggle) ───────────────────────────────────────────────────────
+
+/**
+ * Toggle a color index in/out of skipColors, then refresh all previews.
+ */
+function toggleColor(ci) {
+  if (!lastQuantResult) return;
+  pushUndo();
+  if (skipColors.has(ci)) {
+    skipColors.delete(ci);
+  } else {
+    skipColors.add(ci);
+  }
+  const { palette, indexMap, width, height } = lastQuantResult;
+  drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+  renderSwatches(palette, indexMap, skipColors);
+  updateStitchPreview();
+  setStatus('Preview updated');
+}
+
+// Click on the stitch canvas → look up pixel → toggle that thread
+stitchCanvas.addEventListener('click', e => {
+  if (!lastQuantResult) return;
+  const rect  = stitchCanvas.getBoundingClientRect();
+  const scaleX = stitchCanvas.width  / rect.width;
+  const scaleY = stitchCanvas.height / rect.height;
+  const px = Math.round((e.clientX - rect.left) * scaleX);
+  const py = Math.round((e.clientY - rect.top)  * scaleY);
+  const { indexMap, width, height, palette } = lastQuantResult;
+  if (px < 0 || py < 0 || px >= width || py >= height) return;
+  const ci = indexMap[py * width + px];
+  if (ci >= palette.length) return;   // transparent pixel
+  toggleColor(ci);
+});
+
+// Click on a palette swatch → toggle that thread
+swatchContainer.addEventListener('click', e => {
+  const swatch = e.target.closest('[data-color-idx]');
+  if (!swatch) return;
+  const ci = parseInt(swatch.dataset.colorIdx, 10);
+  if (!isNaN(ci)) toggleColor(ci);
+});
 
 // ── Export ────────────────────────────────────────────────────────────────────
 function runExport() {
@@ -225,9 +280,10 @@ function runExport() {
 
       let { palette, indexMap } = quantizeImage(imageData, k);
       indexMap = smoothIndexMap(indexMap, canvas.width, canvas.height, k);
+      const fillAngleDeg = clampInt(Number(angleInput.value), 0, 89);
       const records = generateStitches(
         indexMap, canvas.width, canvas.height, palette,
-        { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40 }
+        { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg }
       );
 
       const stitchCount = records.filter(r => r.type === 'STITCH').length;
@@ -287,6 +343,9 @@ function applyRequest(text) {
   const changes = [];
   let needsRequantize = false;
   let previewOnly     = false;
+
+  // Speculatively save state for undo; reverted below if no change is actually made
+  if (lastQuantResult) pushUndo();
 
   // ── Intent signals ──────────────────────────────────────────────────────────
   const intRemove  = /\b(remove|remov\w*|delete|erase|cut\s*out|take\s*out|get\s*rid|strip|hide|without|exclude|no\b|transparent|clear|drop)\b/.test(t);
@@ -422,12 +481,47 @@ function applyRequest(text) {
     }
   }
 
+  // ── Fill angle ───────────────────────────────────────────────────────────────
+  const subAngle = /\b(fill\s*angle|fill\s*dir|diagonal|horiz(?:ontal)?|angle\b)\b/.test(t);
+  if (subAngle || /\b(diagonal|diag|45|slant|angled)\b/.test(t)) {
+    if (/\b(horiz(?:ontal)?|straight|0|zero|flat)\b/.test(t)) {
+      angleInput.value = 0;
+      changes.push('fill angle → 0°');
+      previewOnly = true;
+    } else if (/\b(diag(?:onal)?|45|slant|angled)\b/.test(t) || (subAngle && intUp)) {
+      angleInput.value = 45;
+      changes.push('fill angle → 45°');
+      previewOnly = true;
+    } else if (numM && subAngle) {
+      const v = Math.max(0, Math.min(89, Math.round(num)));
+      angleInput.value = v;
+      changes.push(`fill angle → ${v}°`);
+      previewOnly = true;
+    }
+  }
+
+  // ── Reset to defaults ────────────────────────────────────────────────────────
+  if (/\b(reset\s+(all|everything)|start\s+over)\b/.test(t) ||
+      (t.trim() === 'reset' && changes.length === 0)) {
+    widthInput.value   = 100;
+    colorsInput.value  = 6;
+    densityInput.value = 0.3;
+    stitchInput.value  = 2.5;
+    angleInput.value   = 45;
+    skipColors.clear();
+    outlineOnly        = false;
+    changes.push('reset to defaults');
+    needsRequantize    = true;
+  }
+
   // ── Result ──────────────────────────────────────────────────────────────────
   if (changes.length === 0) {
+    // Nothing matched — revert the speculative undo push
+    if (lastQuantResult) { undoStack.pop(); updateUndoRedoBtns(); }
     showFeedback(
       'Not understood — try describing what to change, e.g. "remove the background", ' +
       '"draw just the edges", "I want 10 thread colors", "make the design bigger", ' +
-      '"tighter rows", "use longer stitches", "set width to 120mm".',
+      '"tighter rows", "use longer stitches", "set width to 120mm", "reset everything".',
       'err'
     );
     return;
@@ -444,9 +538,136 @@ function applyRequest(text) {
       const { palette, indexMap, width, height } = lastQuantResult;
       drawQuantizedPreview(palette, indexMap, width, height, skipColors);
       renderSwatches(palette, indexMap, skipColors);
+      updateStitchPreview();
       exportBtn.disabled = false;
       setStatus('Preview updated');
     }
+  }
+}
+
+// ── Stitch preview ────────────────────────────────────────────────────────────
+
+/**
+ * Regenerate stitch records from the cached quantize result and render them
+ * onto the stitch preview canvas.
+ */
+function updateStitchPreview() {
+  if (!lastQuantResult) return;
+  const { palette, indexMap, width, height } = lastQuantResult;
+
+  const densityMm   = Math.max(0.2, Math.min(2.0, Number(densityInput.value) || 0.3));
+  const stitchMm    = Math.max(1.0, Math.min(6.0,  Number(stitchInput.value) || 2.5));
+  const PX_PER_MM   = 5;
+  const pitchPx     = Math.max(1, Math.round(densityMm  * PX_PER_MM));
+  const stitchLenPx = Math.max(1, Math.round(stitchMm   * PX_PER_MM));
+
+  const fillAngleDeg = clampInt(Number(angleInput.value), 0, 89);
+  const records = generateStitches(
+    indexMap, width, height, palette,
+    { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg }
+  );
+
+  // Rebuild the same color order as stitcher.js (sorted by pixel count desc)
+  const k = palette.length;
+  const counts = new Array(k).fill(0);
+  for (let i = 0; i < indexMap.length; i++) {
+    if (indexMap[i] < k) counts[indexMap[i]]++;
+  }
+  const colorOrder = Array.from({ length: k }, (_, i) => i)
+    .filter(i => counts[i] > 0 && !skipColors.has(i))
+    .sort((a, b) => counts[b] - counts[a]);
+
+  renderStitchPreview(records, palette, colorOrder, width, height);
+}
+
+/**
+ * Draw the stitch records onto the stitch preview canvas.
+ * Stitches are drawn as coloured lines; jump moves are skipped.
+ * A subtle 10 mm grid is rendered behind the stitches.
+ *
+ * @param {Array}    records     Output of generateStitches()
+ * @param {number[][]} palette   [r,g,b] entries
+ * @param {number[]} colorOrder  Palette indices in the order they appear in records
+ * @param {number}   w           Working canvas width in pixels
+ * @param {number}   h           Working canvas height in pixels
+ */
+function renderStitchPreview(records, palette, colorOrder, w, h) {
+  stitchCanvas.width  = w;
+  stitchCanvas.height = h;
+  const ctx = stitchCanvas.getContext('2d');
+
+  // Fabric-coloured background
+  ctx.fillStyle = '#faf8f5';
+  ctx.fillRect(0, 0, w, h);
+
+  // Subtle 10 mm grid (50 px at 5 px/mm)
+  const GRID = 50;
+  ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+  ctx.lineWidth   = 0.5;
+  for (let x = 0; x <= w; x += GRID) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+  for (let y = 0; y <= h; y += GRID) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+
+  if (colorOrder.length === 0) return;
+
+  // Draw stitches, batched by color phase for performance
+  let phase      = 0;
+  let prevX      = 0;
+  let prevY      = 0;
+  let prevIsJump = true; // true = previous position came from a JUMP (start fresh sub-path)
+
+  ctx.lineWidth  = 1.2;
+  ctx.lineCap    = 'round';
+  ctx.lineJoin   = 'round';
+
+  // Start first path
+  const firstColor = palette[colorOrder[0]] || [0, 0, 0];
+  ctx.strokeStyle = `rgb(${firstColor[0]},${firstColor[1]},${firstColor[2]})`;
+  ctx.beginPath();
+
+  for (const rec of records) {
+    if (rec.type === 'END') {
+      ctx.stroke();
+      break;
+    }
+
+    if (rec.type === 'COLOR_CHANGE') {
+      ctx.stroke();
+      phase++;
+      if (phase < colorOrder.length) {
+        const [r, g, b] = palette[colorOrder[phase]] || [0, 0, 0];
+        ctx.strokeStyle = `rgb(${r},${g},${b})`;
+        ctx.beginPath();
+      }
+      prevIsJump = true;
+      continue;
+    }
+
+    // DST coords → canvas pixel coords (flip Y axis)
+    const cx = rec.x / 2;
+    const cy = h - 1 - rec.y / 2;
+
+    if (rec.type === 'JUMP') {
+      prevX      = cx;
+      prevY      = cy;
+      prevIsJump = true;
+      continue;
+    }
+
+    // STITCH: draw a line from the previous position
+    if (prevIsJump) {
+      // Start a new sub-path from the last known position (end of jump)
+      ctx.moveTo(prevX, prevY);
+      ctx.lineTo(cx, cy);
+      prevIsJump = false;
+    } else {
+      ctx.lineTo(cx, cy);
+    }
+    prevX = cx;
+    prevY = cy;
   }
 }
 
@@ -454,6 +675,93 @@ function showFeedback(msg, cls) {
   requestFeedback.textContent = msg;
   requestFeedback.className = 'request-feedback' + (cls ? ' ' + cls : '');
 }
+
+// ── Undo / redo ───────────────────────────────────────────────────────────────
+
+function captureState() {
+  return {
+    widthMm:    widthInput.value,
+    numColors:  colorsInput.value,
+    densityMm:  densityInput.value,
+    stitchMm:   stitchInput.value,
+    fillAngle:  angleInput.value,
+    skipColors: new Set(skipColors),
+    outlineOnly,
+    quantResult: lastQuantResult ? {
+      palette:  lastQuantResult.palette.map(c => [...c]),
+      indexMap: new Uint8Array(lastQuantResult.indexMap),  // snapshot copy
+      width:    lastQuantResult.width,
+      height:   lastQuantResult.height,
+    } : null,
+  };
+}
+
+function pushUndo() {
+  undoStack.push(captureState());
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0;
+  updateUndoRedoBtns();
+}
+
+function applySnapshot(snap) {
+  clearTimeout(debounceTimer);
+  debounceUndoPushed = false;
+  widthInput.value   = snap.widthMm;
+  colorsInput.value  = snap.numColors;
+  densityInput.value = snap.densityMm;
+  stitchInput.value  = snap.stitchMm;
+  angleInput.value   = snap.fillAngle;
+  skipColors.clear();
+  snap.skipColors.forEach(ci => skipColors.add(ci));
+  outlineOnly = snap.outlineOnly;
+  if (snap.quantResult) {
+    lastQuantResult = snap.quantResult;
+    const { palette, indexMap, width, height } = lastQuantResult;
+    drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+    renderSwatches(palette, indexMap, skipColors);
+    updateStitchPreview();
+    previewSection.classList.remove('hidden');
+    requestBox.classList.remove('hidden');
+    exportBtn.disabled = false;
+  }
+  setStatus('Restored');
+}
+
+function undo() {
+  if (undoStack.length === 0) return;
+  redoStack.push(captureState());
+  applySnapshot(undoStack.pop());
+  updateUndoRedoBtns();
+}
+
+function redo() {
+  if (redoStack.length === 0) return;
+  undoStack.push(captureState());
+  applySnapshot(redoStack.pop());
+  updateUndoRedoBtns();
+}
+
+function updateUndoRedoBtns() {
+  undoBtn.disabled = undoStack.length === 0;
+  redoBtn.disabled = redoStack.length === 0;
+}
+
+undoBtn.addEventListener('click', undo);
+redoBtn.addEventListener('click', redo);
+
+document.addEventListener('keydown', e => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod) return;
+  if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+  if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+});
+
+// Quick-action chips — each chip passes its canned command string to applyRequest
+chipsContainer.addEventListener('click', e => {
+  const chip = e.target.closest('[data-cmd]');
+  if (!chip) return;
+  applyRequest(chip.dataset.cmd);
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function downloadBlob(data, filename, mime) {
@@ -478,10 +786,17 @@ function clampInt(v, lo, hi) {
 
 // Re-run quantize preview when settings change (debounced)
 let debounceTimer;
-[widthInput, colorsInput, densityInput, stitchInput].forEach(el => {
+let debounceUndoPushed = false;   // true = undo already saved for this edit session
+[widthInput, colorsInput, densityInput, stitchInput, angleInput].forEach(el => {
   el.addEventListener('input', () => {
+    // Capture the state once, BEFORE any keystroke in this editing session changes it
+    if (!debounceUndoPushed && loadedImage && lastQuantResult) {
+      pushUndo();
+      debounceUndoPushed = true;
+    }
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
+      debounceUndoPushed = false;
       if (loadedImage) { exportBtn.disabled = true; runQuantize(loadedImage); }
     }, 400);
   });

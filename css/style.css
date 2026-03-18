@@ -85,6 +85,11 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
 .hidden { display: none !important; }
 
 .preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.preview-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
@@ -112,6 +117,10 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   display: block;
   image-rendering: pixelated;
 }
+.preview-panel--stitch canvas {
+  image-rendering: auto; /* smooth lines look better than pixelated */
+  background: #faf8f5;
+}
 
 .palette-swatches {
   display: flex;
@@ -125,13 +134,34 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   gap: 5px;
   font-size: 0.78rem;
   color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 4px;
+  transition: background 0.12s;
+  user-select: none;
 }
+.swatch:hover { background: rgba(0,0,0,0.06); }
+.swatch:active { background: rgba(0,0,0,0.12); }
 .swatch-color {
   width: 16px;
   height: 16px;
   border-radius: 3px;
   border: 1px solid rgba(0,0,0,0.12);
   flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+
+/* Stitch canvas — crosshair gum cursor */
+.preview-panel--stitch canvas {
+  cursor: crosshair;
+}
+.stitch-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 0.4rem;
 }
 
 /* Request box */
@@ -186,6 +216,44 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
 }
 .request-feedback.ok  { color: var(--success); }
 .request-feedback.err { color: #c0392b; }
+
+/* Request header row (label + undo/redo) */
+.request-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.undo-row { display: flex; gap: 0.35rem; }
+.undo-btn {
+  padding: 0.28rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background 0.12s, color 0.12s;
+}
+.undo-btn:hover:not(:disabled) { background: var(--bg); color: var(--text); }
+.undo-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Quick-action chips */
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.chip {
+  padding: 0.28rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.chip:hover { background: #eef2fb; border-color: var(--accent); color: var(--accent); }
+.chip:active { background: #dce6f8; }
 
 /* Settings */
 .settings {
@@ -279,7 +347,7 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
 .status.error { color: #c0392b; font-weight: 500; }
 
 @media (max-width: 520px) {
-  .preview-section { grid-template-columns: 1fr; }
+  .preview-row { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .export-bar { flex-direction: column; align-items: stretch; }
 }

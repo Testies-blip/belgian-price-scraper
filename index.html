@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Photo to Embroidery DST</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=5">
 </head>
 <body>
   <div class="container">
@@ -28,19 +28,44 @@
     </div>
 
     <div id="preview-section" class="preview-section hidden">
-      <div class="preview-panel">
-        <h3>Original</h3>
-        <canvas id="original-canvas"></canvas>
+      <div class="preview-row">
+        <div class="preview-panel">
+          <h3>Original</h3>
+          <canvas id="original-canvas"></canvas>
+        </div>
+        <div class="preview-panel">
+          <h3>Quantized preview</h3>
+          <canvas id="quantized-canvas"></canvas>
+          <div id="palette-swatches" class="palette-swatches"></div>
+        </div>
       </div>
-      <div class="preview-panel">
-        <h3>Quantized preview</h3>
-        <canvas id="quantized-canvas"></canvas>
-        <div id="palette-swatches" class="palette-swatches"></div>
+      <div class="preview-panel preview-panel--stitch">
+        <h3>Stitch preview <span class="stitch-hint">— click canvas or swatch to remove / restore a thread</span></h3>
+        <canvas id="stitch-canvas"></canvas>
       </div>
     </div>
 
     <div id="request-box" class="request-box hidden">
-      <label class="request-label" for="request-input">Request a change</label>
+      <div class="request-header">
+        <label class="request-label" for="request-input">Request a change</label>
+        <div class="undo-row">
+          <button id="undo-btn" class="undo-btn" disabled title="Undo (Ctrl+Z)">↩ Undo</button>
+          <button id="redo-btn" class="undo-btn" disabled title="Redo (Ctrl+Y)">↪ Redo</button>
+        </div>
+      </div>
+      <div class="chips" id="chips">
+        <button class="chip" data-cmd="remove background">Remove bg</button>
+        <button class="chip" data-cmd="restore background">Restore bg</button>
+        <button class="chip" data-cmd="outline only">Outline</button>
+        <button class="chip" data-cmd="fill mode">Fill</button>
+        <button class="chip" data-cmd="reset everything">Reset</button>
+        <button class="chip" data-cmd="more colors">+ Colors</button>
+        <button class="chip" data-cmd="fewer colors">− Colors</button>
+        <button class="chip" data-cmd="finer rows">Finer rows</button>
+        <button class="chip" data-cmd="looser rows">Looser rows</button>
+        <button class="chip" data-cmd="45 diagonal">45° fill</button>
+        <button class="chip" data-cmd="horizontal fill">0° fill</button>
+      </div>
       <div class="request-row">
         <input type="text" id="request-input"
           placeholder='e.g. "use 8 colors", "make it 150mm wide", "finer stitches"'
@@ -73,6 +98,11 @@
           <span class="hint">mm</span>
           <input type="number" id="stitch-mm" value="2.5" min="1.0" max="6.0" step="0.5">
         </label>
+        <label>
+          Fill angle
+          <span class="hint">deg (0 = horiz, 45 = diag)</span>
+          <input type="number" id="fill-angle" value="45" min="0" max="89" step="15">
+        </label>
       </div>
     </details>
 
@@ -82,9 +112,9 @@
     </div>
   </div>
 
-  <script src="js/quantize.js"></script>
-  <script src="js/stitcher.js"></script>
-  <script src="js/dst.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/quantize.js?v=5"></script>
+  <script src="js/stitcher.js?v=5"></script>
+  <script src="js/dst.js?v=5"></script>
+  <script src="js/app.js?v=5"></script>
 </body>
 </html>
