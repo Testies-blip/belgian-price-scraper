@@ -361,3 +361,45 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   .settings-grid { grid-template-columns: 1fr; }
   .export-bar { flex-direction: column; align-items: stretch; }
 }
+
+/* ── Segmentation status bar ─────────────────────────────────────────────── */
+.seg-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.55rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+.seg-status.seg-running { color: var(--muted); }
+.seg-status.seg-done    { color: var(--text); }
+.seg-status.seg-none    { color: var(--muted); font-style: italic; }
+
+.seg-icon { font-size: 1rem; flex-shrink: 0; line-height: 1; }
+.seg-status.seg-running .seg-icon {
+  display: inline-block;
+  animation: seg-spin 1.1s linear infinite;
+}
+@keyframes seg-spin { to { transform: rotate(360deg); } }
+
+.seg-text { font-weight: 500; flex-shrink: 0; }
+
+.seg-parts { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-left: 0.15rem; }
+
+.seg-part-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 12px;
+  font-size: 0.73rem;
+  font-weight: 600;
+  background: #eef2fb;
+  color: var(--accent);
+  border: 1px solid #c5d4f5;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s;
+}
+.seg-part-badge:hover { background: #dce6f8; }

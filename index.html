@@ -4,7 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Photo to Embroidery DST</title>
-  <link rel="stylesheet" href="css/style.css?v=6">
+  <link rel="stylesheet" href="css/style.css?v=7">
+  <!-- BodyPix / TensorFlow.js — loaded lazily by segmenter.js on first image -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js" defer></script>
 </head>
 <body>
   <div class="container">
@@ -39,6 +43,14 @@
           <div id="palette-swatches" class="palette-swatches"></div>
         </div>
       </div>
+
+      <!-- Segmentation status bar: hidden until an image is loaded -->
+      <div id="seg-status" class="seg-status hidden">
+        <span id="seg-icon" class="seg-icon" aria-hidden="true">◎</span>
+        <span id="seg-text" class="seg-text">Recognising figure…</span>
+        <div id="seg-parts" class="seg-parts"></div>
+      </div>
+
       <div class="preview-panel preview-panel--stitch">
         <h3>Stitch preview <span class="stitch-hint">— click canvas or swatch to remove / restore a thread</span></h3>
         <canvas id="stitch-canvas"></canvas>
@@ -68,7 +80,7 @@
       </div>
       <div class="request-row">
         <input type="text" id="request-input"
-          placeholder='e.g. "use 8 colors", "make it 150mm wide", "finer stitches"'
+          placeholder='e.g. "pants in 1 color", "make the jacket 2 colours", "remove bg"'
           autocomplete="off">
         <button id="request-btn">Apply</button>
       </div>
@@ -112,10 +124,12 @@
     </div>
   </div>
 
-  <script src="js/colornames.js?v=6"></script>
-  <script src="js/quantize.js?v=6"></script>
-  <script src="js/stitcher.js?v=6"></script>
-  <script src="js/dst.js?v=6"></script>
-  <script src="js/app.js?v=6"></script>
+  <script src="js/colornames.js?v=7"></script>
+  <script src="js/quantize.js?v=7"></script>
+  <script src="js/stitcher.js?v=7"></script>
+  <script src="js/dst.js?v=7"></script>
+  <script src="js/segmenter.js?v=1"></script>
+  <script src="js/bodyparts.js?v=1"></script>
+  <script src="js/app.js?v=7"></script>
 </body>
 </html>

@@ -26,11 +26,35 @@ const angleInput      = document.getElementById('fill-angle');
 const undoBtn         = document.getElementById('undo-btn');
 const redoBtn         = document.getElementById('redo-btn');
 const chipsContainer  = document.getElementById('chips');
+const segStatus       = document.getElementById('seg-status');
+const segIcon         = document.getElementById('seg-icon');
+const segText         = document.getElementById('seg-text');
+const segParts        = document.getElementById('seg-parts');
+
+// ── Body-part NLP patterns ────────────────────────────────────────────────────
+// Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
+// Aliases are sorted longest-first so longer keys shadow shorter prefix matches.
+const _PART_RE_FRAG = Object.keys(BODY_ALIASES)
+  .sort((a, b) => b.length - a.length)
+  .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
+// Pattern A — colour count: "the pants of the man are to be 1 color"
+const _REGION_COUNT_RE = new RegExp(
+  '\\b(?:make\\s+)?(?:the\\s+)?(' + _PART_RE_FRAG + ')\\b' +
+  '[^.!?]*?\\b(\\d+)\\s+colou?rs?\\b', 'i'
+);
+// Pattern B — colour name: "pants are blue" / "jacket should be green"
+const _REGION_COLOR_RE = new RegExp(
+  '\\b(?:the\\s+)?(' + _PART_RE_FRAG + ')\\s+' +
+  '(?:are?|is|should\\s+be|in|to\\s+be)\\s+' +
+  '(?!\\d)([a-z]+(?:\\s+[a-z]+)?)', 'i'
+);
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let loadedImage     = null;   // HTMLImageElement
 let currentFile     = null;   // File object (for filename)
 let lastQuantResult = null;   // { palette, indexMap, width, height } cached after quantize
+let lastSegResult   = null;   // SegmentResult from segmenter.js (or null)
 let skipColors      = new Set();  // color indices excluded from stitching
 let outlineOnly     = false;      // stitch outlines instead of fills
 
@@ -67,6 +91,8 @@ function handleFile(file) {
   currentFile = file;
   skipColors.clear();
   outlineOnly = false;
+  lastSegResult = null;
+  segStatus.classList.add('hidden');
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
@@ -129,6 +155,7 @@ function runQuantize(img) {
       requestBox.classList.remove('hidden');
       exportBtn.disabled = false;
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
+      triggerSegmentation(canvas);   // async, non-blocking
     } catch (err) {
       setStatus('Error: ' + err.message, 'error');
     }
@@ -581,6 +608,71 @@ function applyRequest(text) {
     }
   }
 
+  // ── Body-part region commands ─────────────────────────────────────────────────
+  // e.g. "the pants of the man are to be 1 color", "make the jacket 2 colours",
+  //      "pants are blue", "jacket should be green"
+  // Gated on segmentation having completed successfully.
+  if (lastSegResult && lastSegResult.personFound && lastQuantResult) {
+    // Pattern A — reduce a region to N colours
+    const regionCountM = t.match(_REGION_COUNT_RE);
+    if (regionCountM) {
+      const partWord = regionCountM[1].toLowerCase();
+      const targetN  = Math.max(1, Math.min(16, parseInt(regionCountM[2], 10)));
+      const { group, groupPartIds } = bodyGroupForWord(partWord);
+      if (group) {
+        const regionPixels = getRegionPixels(groupPartIds, lastSegResult);
+        if (regionPixels.size > 0) {
+          const { mergedCount } = mergeRegionColors(
+            lastQuantResult.indexMap, regionPixels,
+            lastQuantResult.palette, targetN, null, lastQuantResult.colorNames
+          );
+          const label = PART_LABELS[group] || group;
+          changes.push(mergedCount > 0
+            ? `${label} → ${targetN} color${targetN !== 1 ? 's' : ''}`
+            : `${label} already ≤ ${targetN} color${targetN !== 1 ? 's' : ''}`);
+          previewOnly = true;
+        } else {
+          showFeedback(`No "${PART_LABELS[group] || group}" region detected — try a clearer photo.`, 'err');
+        }
+      }
+    }
+
+    // Pattern B — target a colour name within a region (only when Pattern A doesn't match)
+    if (!regionCountM) {
+      const regionColorM = t.match(_REGION_COLOR_RE);
+      if (regionColorM) {
+        const partWord  = regionColorM[1].toLowerCase();
+        const colorWord = regionColorM[2].trim().toLowerCase();
+        // Guard: ignore if colorWord looks like a lone digit (Pattern A overlap)
+        if (!/^\d+$/.test(colorWord) && lastQuantResult.colorNames) {
+          const { group, groupPartIds } = bodyGroupForWord(partWord);
+          if (group) {
+            const regionPixels = getRegionPixels(groupPartIds, lastSegResult);
+            if (regionPixels.size > 0) {
+              const { mergedCount, keptIndices } = mergeRegionColors(
+                lastQuantResult.indexMap, regionPixels,
+                lastQuantResult.palette, 1, colorWord, lastQuantResult.colorNames
+              );
+              const label = PART_LABELS[group] || group;
+              if (mergedCount > 0 || keptIndices.length > 0) {
+                changes.push(`${label} → ${colorWord}`);
+                previewOnly = true;
+              } else {
+                showFeedback(`Couldn't find "${colorWord}" in the ${label} region.`, 'err');
+              }
+            }
+          }
+        }
+      }
+    }
+  } else if (lastQuantResult && !lastSegResult &&
+             (_REGION_COUNT_RE.test(t) || _REGION_COLOR_RE.test(t))) {
+    // Segmentation not yet ready — revert speculative undo push and inform user
+    if (lastQuantResult) { undoStack.pop(); updateUndoRedoBtns(); }
+    showFeedback('Figure recognition is still loading — wait a moment and try again.', 'err');
+    return;
+  }
+
   // ── Reset to defaults ────────────────────────────────────────────────────────
   if (/\b(reset\s+(all|everything)|start\s+over)\b/.test(t) ||
       (t.trim() === 'reset' && changes.length === 0)) {
@@ -755,6 +847,116 @@ function renderStitchPreview(records, palette, colorOrder, w, h) {
 function showFeedback(msg, cls) {
   requestFeedback.textContent = msg;
   requestFeedback.className = 'request-feedback' + (cls ? ' ' + cls : '');
+}
+
+// ── Segmentation ──────────────────────────────────────────────────────────────
+
+/**
+ * Kick off BodyPix segmentation asynchronously (non-blocking).
+ * Called after runQuantize() completes, passing the same working canvas.
+ * Falls back gracefully when offline or when the CDN scripts have not loaded.
+ *
+ * @param {HTMLCanvasElement} canvas  The working canvas (same size as indexMap)
+ */
+async function triggerSegmentation(canvas) {
+  // Guard: CDN scripts may not be available (e.g. offline or file:// without network)
+  if (typeof bodyPix === 'undefined') return;
+
+  showSegStatus('running', 'Recognising figure\u2026', []);
+
+  try {
+    const result = await segmentImage(canvas);   // from segmenter.js
+    lastSegResult = result;
+
+    if (!result.personFound) {
+      showSegStatus('none', 'No person detected', []);
+      return;
+    }
+
+    const groups = getDetectedGroupNames(result.detectedPartIds, result);
+    showSegStatus('done', 'Person detected:', groups.map(g => g.label));
+
+  } catch (err) {
+    console.warn('[app] Segmentation failed:', err);
+    lastSegResult = null;
+    showSegStatus('none', 'Recognition unavailable', []);
+  }
+}
+
+/**
+ * Update the segmentation status bar UI.
+ *
+ * @param {'running'|'done'|'none'} state
+ * @param {string}   message
+ * @param {string[]} partLabels  Human-readable part labels for clickable badges
+ */
+function showSegStatus(state, message, partLabels) {
+  segStatus.classList.remove('hidden', 'seg-running', 'seg-done', 'seg-none');
+  segStatus.classList.add('seg-' + state);
+  segIcon.textContent = state === 'running' ? '\u25CE'   // ◎ spinner
+                      : state === 'done'    ? '\u2713'   // ✓
+                      :                       '\u25CB';  // ○ empty
+  segText.textContent = message;
+  segParts.innerHTML  = '';
+  partLabels.forEach(label => {
+    const badge = document.createElement('span');
+    badge.className   = 'seg-part-badge';
+    badge.textContent = label;
+    // Clicking a badge pre-fills the request input with a template command
+    badge.addEventListener('click', () => {
+      requestInput.value = `the ${label} in 1 color`;
+      requestInput.focus();
+    });
+    segParts.appendChild(badge);
+  });
+}
+
+/**
+ * Determine which named body groups were actually detected.
+ * Returns entries in top-to-bottom body order.
+ *
+ * @param {Set<number>}  detectedPartIds
+ * @param {SegmentResult} segResult
+ * @returns {Array<{key:string, label:string}>}
+ */
+function getDetectedGroupNames(detectedPartIds, segResult) {
+  const found = [];
+
+  // Hat first (heuristic — always check if there's something above the face)
+  const hatPx = getHatPixels(segResult.partMap, segResult.width, segResult.height);
+  if (hatPx.size > 0) found.push({ key: 'hat', label: PART_LABELS.hat });
+
+  // Then check each BODY_GROUPS entry in insertion order (top → bottom)
+  for (const [key, partSet] of Object.entries(BODY_GROUPS)) {
+    for (const id of partSet) {
+      if (detectedPartIds.has(id)) {
+        found.push({ key, label: PART_LABELS[key] });
+        break;
+      }
+    }
+  }
+
+  return found;
+}
+
+/**
+ * Collect all pixel indices belonging to a body group.
+ * For the 'hat' sentinel, delegates to getHatPixels() from bodyparts.js.
+ *
+ * @param {Set<number>|'hat'} groupPartIds  BodyPix part IDs or 'hat' sentinel
+ * @param {SegmentResult}     segResult
+ * @returns {Set<number>}  Pixel indices (working-canvas coordinate space)
+ */
+function getRegionPixels(groupPartIds, segResult) {
+  if (groupPartIds === 'hat') {
+    return getHatPixels(segResult.partMap, segResult.width, segResult.height);
+  }
+  const { partMap } = segResult;
+  const pixels = new Set();
+  for (let i = 0; i < partMap.length; i++) {
+    if (groupPartIds.has(partMap[i])) pixels.add(i);
+  }
+  return pixels;
 }
 
 // ── Undo / redo ───────────────────────────────────────────────────────────────
