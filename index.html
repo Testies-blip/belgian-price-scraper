@@ -57,10 +57,17 @@
           <button id="erase-btn" class="erase-btn" disabled title="Drag on canvas to erase an area from the design">&#9986; Erase Area</button>
           <button id="copy-neighbor-btn" class="erase-btn" disabled title="Drag to fill an area with the color surrounding it">&#9632; Fill Neighbor</button>
           <button id="solo-btn" class="erase-btn" disabled title="Browse stitching layers one at a time (Esc to exit)">&#8801; Layers</button>
+          <div class="zoom-controls">
+            <button id="zoom-out-btn" class="zoom-btn" disabled title="Zoom out (Ctrl+scroll)">&#8722;</button>
+            <span id="zoom-label" class="zoom-label">100%</span>
+            <button id="zoom-in-btn" class="zoom-btn" disabled title="Zoom in (Ctrl+scroll)">+</button>
+          </div>
         </div>
-        <div class="stitch-canvas-wrap">
-          <canvas id="stitch-canvas"></canvas>
-          <canvas id="erase-overlay"></canvas>
+        <div id="stitch-scroll-wrap" class="stitch-scroll-wrap">
+          <div id="stitch-canvas-wrap" class="stitch-canvas-wrap">
+            <canvas id="stitch-canvas"></canvas>
+            <canvas id="erase-overlay"></canvas>
+          </div>
         </div>
         <div id="layer-nav" class="layer-nav hidden">
           <button id="layer-prev-btn" class="layer-nav-btn" title="Previous layer (&#8592; arrow key)">&#9664;</button>
@@ -145,6 +152,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=12"></script>
+  <script src="js/app.js?v=13"></script>
 </body>
 </html>

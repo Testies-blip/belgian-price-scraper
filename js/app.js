@@ -40,6 +40,11 @@ const layerNextBtn    = document.getElementById('layer-next-btn');
 const layerColorDot   = document.getElementById('layer-color-dot');
 const layerColorName  = document.getElementById('layer-color-name');
 const layerIndexLabel = document.getElementById('layer-index-label');
+const zoomInBtn         = document.getElementById('zoom-in-btn');
+const zoomOutBtn        = document.getElementById('zoom-out-btn');
+const zoomLabel         = document.getElementById('zoom-label');
+const stitchScrollWrap  = document.getElementById('stitch-scroll-wrap');
+const stitchCanvasWrapEl = document.getElementById('stitch-canvas-wrap');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -72,6 +77,8 @@ let eraseAreaMode     = false;    // true while the drag-to-erase tool is active
 let copyNeighborMode  = false;    // true while the fill-neighbor tool is active
 let _eraseDrag        = null;     // { startX, startY, rect, scaleX, scaleY } while dragging
 let soloLayer         = null;     // null = show all layers; palette index = show only that layer
+let zoomLevel         = 1.0;     // current zoom; one of ZOOM_STEPS
+const ZOOM_STEPS      = [1, 1.5, 2, 3, 4];
 
 // ── Undo / redo state ─────────────────────────────────────────────────────────
 const MAX_UNDO  = 20;
@@ -119,6 +126,11 @@ function handleFile(file) {
   soloBtn.classList.remove('active');
   layerNav.classList.add('hidden');
   soloBtn.disabled = true;
+  zoomLevel = 1.0;
+  stitchCanvasWrapEl.style.width = '';
+  zoomLabel.textContent = '100%';
+  zoomInBtn.disabled  = true;
+  zoomOutBtn.disabled = true;
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
@@ -148,6 +160,8 @@ function runQuantize(img) {
   eraseBtn.disabled        = true;
   copyNeighborBtn.disabled = true;
   soloBtn.disabled         = true;
+  zoomInBtn.disabled       = true;
+  zoomOutBtn.disabled      = true;
   // Exit solo mode — palette/layout may change after re-quantize
   soloLayer = null;
   soloBtn.classList.remove('active');
@@ -190,6 +204,7 @@ function runQuantize(img) {
       eraseBtn.disabled        = false;
       copyNeighborBtn.disabled = false;
       soloBtn.disabled         = false;
+      applyZoom();   // re-enables zoom buttons and re-applies any active zoom width
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
       lastSegResult = null;          // invalidate any stale segmentation from previous quantize
       triggerSegmentation(canvas);   // async, non-blocking
@@ -1085,6 +1100,50 @@ layerNextBtn.addEventListener('click', () => {
     updateStitchPreview();
   }
 });
+
+// ── Zoom tool ─────────────────────────────────────────────────────────────────
+
+/**
+ * Apply the current zoomLevel to the canvas-wrap and update the zoom UI.
+ * At zoom=1 the canvas-wrap reverts to its natural 100% CSS width.
+ * At zoom>1 it is given an explicit pixel width = scrollWrap.clientWidth × zoom,
+ * causing the stitch-scroll-wrap to show scrollbars.
+ */
+function applyZoom() {
+  if (zoomLevel === 1) {
+    stitchCanvasWrapEl.style.width = '';   // let CSS handle 100%
+  } else {
+    stitchCanvasWrapEl.style.width =
+      Math.round(stitchScrollWrap.clientWidth * zoomLevel) + 'px';
+  }
+  stitchScrollWrap.scrollLeft = 0;
+  stitchScrollWrap.scrollTop  = 0;
+  zoomLabel.textContent = Math.round(zoomLevel * 100) + '%';
+  const idx = ZOOM_STEPS.indexOf(zoomLevel);
+  zoomOutBtn.disabled = !lastQuantResult || idx <= 0;
+  zoomInBtn.disabled  = !lastQuantResult || idx >= ZOOM_STEPS.length - 1;
+}
+
+zoomInBtn.addEventListener('click', () => {
+  const idx = ZOOM_STEPS.indexOf(zoomLevel);
+  if (idx < ZOOM_STEPS.length - 1) { zoomLevel = ZOOM_STEPS[idx + 1]; applyZoom(); }
+});
+
+zoomOutBtn.addEventListener('click', () => {
+  const idx = ZOOM_STEPS.indexOf(zoomLevel);
+  if (idx > 0) { zoomLevel = ZOOM_STEPS[idx - 1]; applyZoom(); }
+});
+
+// Ctrl+scroll over the stitch canvas → zoom in/out
+stitchScrollWrap.addEventListener('wheel', e => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  if (!lastQuantResult) return;
+  e.preventDefault();
+  const idx   = ZOOM_STEPS.indexOf(zoomLevel);
+  const delta = e.deltaY < 0 ? 1 : -1;   // scroll-up = zoom in
+  const newIdx = Math.max(0, Math.min(ZOOM_STEPS.length - 1, idx + delta));
+  if (newIdx !== idx) { zoomLevel = ZOOM_STEPS[newIdx]; applyZoom(); }
+}, { passive: false });
 
 /**
  * Start the erase drag.  We cache the bounding rect and scale factors here so
