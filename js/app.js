@@ -30,6 +30,8 @@ const segStatus       = document.getElementById('seg-status');
 const segIcon         = document.getElementById('seg-icon');
 const segText         = document.getElementById('seg-text');
 const segParts        = document.getElementById('seg-parts');
+const eraseBtn        = document.getElementById('erase-btn');
+const eraseOverlay    = document.getElementById('erase-overlay');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -58,6 +60,8 @@ let lastSegResult   = null;   // SegmentResult from segmenter.js (or null)
 let _segGeneration  = 0;      // incremented each time segmentation is kicked off
 let skipColors      = new Set();  // color indices excluded from stitching
 let outlineOnly     = false;      // stitch outlines instead of fills
+let eraseAreaMode   = false;      // true while the drag-to-erase tool is active
+let _eraseDrag      = null;       // { startX, startY, rect, scaleX, scaleY } while dragging
 
 // ── Undo / redo state ─────────────────────────────────────────────────────────
 const MAX_UNDO  = 20;
@@ -94,6 +98,11 @@ function handleFile(file) {
   outlineOnly = false;
   lastSegResult = null;
   segStatus.classList.add('hidden');
+  eraseAreaMode = false;
+  eraseBtn.classList.remove('active');
+  eraseOverlay.classList.remove('active');
+  _eraseDrag = null;
+  clearEraseOverlay();
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
@@ -120,6 +129,7 @@ function renderOriginal(img) {
 function runQuantize(img) {
   setStatus('Quantizing…');
   exportBtn.disabled = true;
+  eraseBtn.disabled  = true;
 
   setTimeout(() => {
     try {
@@ -155,6 +165,7 @@ function runQuantize(img) {
       previewSection.classList.remove('hidden');
       requestBox.classList.remove('hidden');
       exportBtn.disabled = false;
+      eraseBtn.disabled  = false;
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
       lastSegResult = null;          // invalidate any stale segmentation from previous quantize
       triggerSegmentation(canvas);   // async, non-blocking
@@ -274,7 +285,7 @@ function toggleColor(ci) {
 
 // Click on the stitch canvas → look up pixel → toggle that thread
 stitchCanvas.addEventListener('click', e => {
-  if (!lastQuantResult) return;
+  if (!lastQuantResult || eraseAreaMode) return;
   const rect  = stitchCanvas.getBoundingClientRect();
   const scaleX = stitchCanvas.width  / rect.width;
   const scaleY = stitchCanvas.height / rect.height;
@@ -792,6 +803,9 @@ function updateStitchPreview() {
 function renderStitchPreview(records, palette, colorOrder, w, h) {
   stitchCanvas.width  = w;
   stitchCanvas.height = h;
+  // Keep overlay dimensions in sync so coordinate mapping is always correct
+  eraseOverlay.width  = w;
+  eraseOverlay.height = h;
   const ctx = stitchCanvas.getContext('2d');
 
   // Fabric-coloured background
@@ -902,6 +916,127 @@ function renderStitchPreview(records, palette, colorOrder, w, h) {
 function showFeedback(msg, cls) {
   requestFeedback.textContent = msg;
   requestFeedback.className = 'request-feedback' + (cls ? ' ' + cls : '');
+}
+
+// ── Erase-area tool ───────────────────────────────────────────────────────────
+
+/**
+ * Toggle the drag-to-erase mode on/off.
+ */
+eraseBtn.addEventListener('click', () => {
+  eraseAreaMode = !eraseAreaMode;
+  eraseBtn.classList.toggle('active', eraseAreaMode);
+  eraseOverlay.classList.toggle('active', eraseAreaMode);
+  if (!eraseAreaMode) {
+    _eraseDrag = null;
+    clearEraseOverlay();
+  }
+});
+
+/**
+ * Start the erase drag.  We cache the bounding rect and scale factors here so
+ * subsequent mousemove events don't need to recompute them on every pixel move.
+ */
+eraseOverlay.addEventListener('mousedown', e => {
+  if (!eraseAreaMode || !lastQuantResult) return;
+  const rect   = eraseOverlay.getBoundingClientRect();
+  const scaleX = lastQuantResult.width  / rect.width;
+  const scaleY = lastQuantResult.height / rect.height;
+  _eraseDrag = {
+    startX: Math.round((e.clientX - rect.left) * scaleX),
+    startY: Math.round((e.clientY - rect.top)  * scaleY),
+    rect, scaleX, scaleY,
+  };
+  e.preventDefault();
+});
+
+/**
+ * Update the selection rectangle while the mouse moves (even outside the overlay).
+ */
+document.addEventListener('mousemove', e => {
+  if (!_eraseDrag || !eraseAreaMode) return;
+  const { startX, startY, rect, scaleX, scaleY } = _eraseDrag;
+  const curX = Math.round((e.clientX - rect.left) * scaleX);
+  const curY = Math.round((e.clientY - rect.top)  * scaleY);
+  drawEraseRect(startX, startY, curX, curY);
+});
+
+/**
+ * Finish the drag: apply the erase if the selection is large enough.
+ */
+document.addEventListener('mouseup', e => {
+  if (!_eraseDrag || !eraseAreaMode) return;
+  const { startX, startY, rect, scaleX, scaleY } = _eraseDrag;
+  const endX = Math.round((e.clientX - rect.left) * scaleX);
+  const endY = Math.round((e.clientY - rect.top)  * scaleY);
+  _eraseDrag = null;
+  clearEraseOverlay();
+  // Only act when the user dragged a meaningful area (> 2 px in any direction)
+  if (Math.abs(endX - startX) > 2 || Math.abs(endY - startY) > 2) {
+    applyAreaErase(startX, startY, endX, endY);
+  }
+  // Keep erase mode active — user clicks button again (or Escape) to exit
+});
+
+/**
+ * Draw a dashed selection rectangle on the overlay canvas.
+ */
+function drawEraseRect(x1, y1, x2, y2) {
+  const ctx = eraseOverlay.getContext('2d');
+  ctx.clearRect(0, 0, eraseOverlay.width, eraseOverlay.height);
+  const rx = Math.min(x1, x2);
+  const ry = Math.min(y1, y2);
+  const rw = Math.abs(x2 - x1);
+  const rh = Math.abs(y2 - y1);
+  if (rw < 1 && rh < 1) return;
+  ctx.fillStyle   = 'rgba(231,76,60,0.12)';
+  ctx.fillRect(rx, ry, rw, rh);
+  ctx.strokeStyle = 'rgba(231,76,60,0.9)';
+  ctx.lineWidth   = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(rx + 0.5, ry + 0.5, rw, rh);
+  ctx.setLineDash([]);
+}
+
+/** Clear the erase overlay canvas. */
+function clearEraseOverlay() {
+  eraseOverlay.getContext('2d').clearRect(0, 0, eraseOverlay.width, eraseOverlay.height);
+}
+
+/**
+ * Set all indexMap pixels inside the rectangle to 255 (transparent / erased),
+ * then refresh all three previews and push an undo snapshot.
+ *
+ * Coordinates are in working-canvas pixel space (same as indexMap).
+ */
+function applyAreaErase(x1, y1, x2, y2) {
+  if (!lastQuantResult) return;
+  pushUndo();
+  const { indexMap, width, height, palette, colorNames = [] } = lastQuantResult;
+  const xMin = Math.max(0,         Math.min(x1, x2));
+  const xMax = Math.min(width - 1, Math.max(x1, x2));
+  const yMin = Math.max(0,          Math.min(y1, y2));
+  const yMax = Math.min(height - 1, Math.max(y1, y2));
+  let changed = 0;
+  for (let y = yMin; y <= yMax; y++) {
+    for (let x = xMin; x <= xMax; x++) {
+      if (indexMap[y * width + x] !== 255) {
+        indexMap[y * width + x] = 255;
+        changed++;
+      }
+    }
+  }
+  if (changed === 0) {
+    // Nothing was erased — revert the speculative undo push
+    undoStack.pop();
+    updateUndoRedoBtns();
+    setStatus('Nothing to erase in that area');
+    return;
+  }
+  drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+  renderSwatches(palette, indexMap, skipColors, colorNames);
+  updateStitchPreview();
+  setStatus(`Erased ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
 }
 
 // ── Segmentation ──────────────────────────────────────────────────────────────
@@ -1107,6 +1242,15 @@ undoBtn.addEventListener('click', undo);
 redoBtn.addEventListener('click', redo);
 
 document.addEventListener('keydown', e => {
+  // Escape exits erase-area mode (and cancels any in-progress drag)
+  if (e.key === 'Escape' && eraseAreaMode) {
+    eraseAreaMode = false;
+    eraseBtn.classList.remove('active');
+    eraseOverlay.classList.remove('active');
+    _eraseDrag = null;
+    clearEraseOverlay();
+    return;
+  }
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }

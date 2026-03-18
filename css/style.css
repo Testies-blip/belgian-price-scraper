@@ -403,3 +403,63 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   transition: background 0.12s;
 }
 .seg-part-badge:hover { background: #dce6f8; }
+
+/* ── Erase-area tool ─────────────────────────────────────────────────────── */
+
+/* Header row: title + erase button side-by-side */
+.stitch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.stitch-header h3 { flex: 1; }
+
+/* Relative wrapper so the overlay canvas can be positioned on top */
+.stitch-canvas-wrap { position: relative; line-height: 0; }
+
+/* Both canvases inside the wrap share display sizing */
+.stitch-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+/* Overlay canvas: transparent, floats on top of stitch canvas */
+.stitch-canvas-wrap #erase-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: transparent;
+  image-rendering: auto;
+  pointer-events: none;   /* pass-through when erase mode is off */
+  border-radius: 6px;
+}
+.stitch-canvas-wrap #erase-overlay.active {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* Erase-area toggle button */
+.erase-btn {
+  padding: 0.28rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.erase-btn:hover:not(:disabled) { background: var(--bg); color: var(--text); }
+.erase-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.erase-btn.active {
+  background: #fff2f0;
+  border-color: #e74c3c;
+  color: #c0392b;
+}
+.erase-btn.active:hover { background: #ffe5e3; }

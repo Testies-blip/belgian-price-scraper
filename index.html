@@ -52,8 +52,14 @@
       </div>
 
       <div class="preview-panel preview-panel--stitch">
-        <h3>Stitch preview <span class="stitch-hint">— click canvas or swatch to remove / restore a thread</span></h3>
-        <canvas id="stitch-canvas"></canvas>
+        <div class="stitch-header">
+          <h3>Stitch preview <span class="stitch-hint">— click canvas or swatch to remove / restore a thread</span></h3>
+          <button id="erase-btn" class="erase-btn" disabled title="Drag on canvas to erase an area from the design">&#9986; Erase Area</button>
+        </div>
+        <div class="stitch-canvas-wrap">
+          <canvas id="stitch-canvas"></canvas>
+          <canvas id="erase-overlay"></canvas>
+        </div>
       </div>
     </div>
 
@@ -130,6 +136,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=9"></script>
+  <script src="js/app.js?v=10"></script>
 </body>
 </html>
