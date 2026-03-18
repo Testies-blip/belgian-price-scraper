@@ -57,6 +57,7 @@
           <button id="erase-btn" class="erase-btn" disabled title="Drag on canvas to erase an area from the design">&#9986; Erase Area</button>
           <button id="copy-neighbor-btn" class="erase-btn" disabled title="Drag to fill an area with the color surrounding it">&#9632; Fill Neighbor</button>
           <button id="solo-btn" class="erase-btn" disabled title="Browse stitching layers one at a time (Esc to exit)">&#8801; Layers</button>
+          <button id="draw-btn" class="erase-btn" disabled title="Paint or erase pixels (right-click&#x202F;=&#x202F;erase, Esc to exit)">&#9998; Draw</button>
           <div class="zoom-controls">
             <button id="zoom-out-btn" class="zoom-btn" disabled title="Zoom out (Ctrl+scroll)">&#8722;</button>
             <span id="zoom-label" class="zoom-label">100%</span>
@@ -75,6 +76,18 @@
           <span id="layer-color-name" class="layer-color-name"></span>
           <span id="layer-index-label" class="layer-index-label"></span>
           <button id="layer-next-btn" class="layer-nav-btn" title="Next layer (&#8594; arrow key)">&#9654;</button>
+        </div>
+        <div id="draw-panel" class="draw-panel hidden">
+          <span class="draw-panel-label">Color:</span>
+          <div id="draw-color-row" class="draw-color-row"></div>
+          <span class="draw-panel-sep">|</span>
+          <span class="draw-panel-label">Brush:</span>
+          <div class="draw-brush-group">
+            <button class="draw-brush-btn active" data-size="1" title="1&#xd7;1 px">S</button>
+            <button class="draw-brush-btn" data-size="3" title="3&#xd7;3 px">M</button>
+            <button class="draw-brush-btn" data-size="5" title="5&#xd7;5 px">L</button>
+          </div>
+          <span class="draw-panel-hint">right-click&#x202F;=&#x202F;erase</span>
         </div>
       </div>
     </div>
@@ -152,6 +165,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=13"></script>
+  <script src="js/app.js?v=14"></script>
 </body>
 </html>

@@ -572,3 +572,80 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   min-width: 3rem;
   text-align: center;
 }
+
+/* ── Draw tool ───────────────────────────────────────────────────────────── */
+
+#draw-btn.active {
+  background: #f5f0fb;
+  border-color: #8e44ad;
+  color: #6c3483;
+}
+#draw-btn.active:hover { background: #ede0f8; }
+
+.draw-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.55rem;
+  padding: 0.45rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  font-size: 0.82rem;
+}
+.draw-panel-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.draw-panel-sep { color: var(--border); flex-shrink: 0; }
+.draw-color-row { display: flex; gap: 3px; flex-wrap: wrap; align-items: center; }
+.draw-color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  border: 2px solid rgba(0,0,0,0.12);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.1s, outline 0.1s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.draw-color-swatch.active {
+  border-color: #8e44ad;
+  outline: 2px solid #8e44ad;
+  outline-offset: 1px;
+}
+.draw-color-swatch.eraser {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.draw-brush-group { display: flex; gap: 2px; }
+.draw-brush-btn {
+  padding: 0.12rem 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.draw-brush-btn:hover { background: var(--surface); color: var(--text); }
+.draw-brush-btn.active {
+  background: #f5f0fb;
+  border-color: #8e44ad;
+  color: #6c3483;
+}
+.draw-panel-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+@media (max-width: 600px) { .draw-panel-hint { display: none; } }

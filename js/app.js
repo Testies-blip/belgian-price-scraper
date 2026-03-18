@@ -45,6 +45,9 @@ const zoomOutBtn        = document.getElementById('zoom-out-btn');
 const zoomLabel         = document.getElementById('zoom-label');
 const stitchScrollWrap  = document.getElementById('stitch-scroll-wrap');
 const stitchCanvasWrapEl = document.getElementById('stitch-canvas-wrap');
+const drawBtn           = document.getElementById('draw-btn');
+const drawPanel         = document.getElementById('draw-panel');
+const drawColorRow      = document.getElementById('draw-color-row');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -79,6 +82,10 @@ let _eraseDrag        = null;     // { startX, startY, rect, scaleX, scaleY } wh
 let soloLayer         = null;     // null = show all layers; palette index = show only that layer
 let zoomLevel         = 1.0;     // current zoom; one of ZOOM_STEPS
 const ZOOM_STEPS      = [1, 1.5, 2, 3, 4];
+let drawMode          = false;    // true while draw/paint tool is active
+let drawPaintColor    = 0;        // palette index to paint (255 = erase)
+let drawBrushSize     = 1;        // brush square side: 1, 3 or 5 px
+let _drawDrag         = null;     // { rect, scaleX, scaleY, erasing, prevX, prevY } while drawing
 
 // ── Undo / redo state ─────────────────────────────────────────────────────────
 const MAX_UNDO  = 20;
@@ -131,6 +138,11 @@ function handleFile(file) {
   zoomLabel.textContent = '100%';
   zoomInBtn.disabled  = true;
   zoomOutBtn.disabled = true;
+  drawMode = false;
+  drawBtn.classList.remove('active');
+  drawPanel.classList.add('hidden');
+  drawBtn.disabled = true;
+  _drawDrag = null;
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
@@ -162,6 +174,7 @@ function runQuantize(img) {
   soloBtn.disabled         = true;
   zoomInBtn.disabled       = true;
   zoomOutBtn.disabled      = true;
+  drawBtn.disabled         = true;
   // Exit solo mode — palette/layout may change after re-quantize
   soloLayer = null;
   soloBtn.classList.remove('active');
@@ -205,6 +218,8 @@ function runQuantize(img) {
       copyNeighborBtn.disabled = false;
       soloBtn.disabled         = false;
       applyZoom();   // re-enables zoom buttons and re-applies any active zoom width
+      drawBtn.disabled = false;
+      if (drawMode) updateDrawPanel();
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
       lastSegResult = null;          // invalidate any stale segmentation from previous quantize
       triggerSegmentation(canvas);   // async, non-blocking
@@ -324,7 +339,7 @@ function toggleColor(ci) {
 
 // Click on the stitch canvas → look up pixel → toggle that thread
 stitchCanvas.addEventListener('click', e => {
-  if (!lastQuantResult || eraseAreaMode || copyNeighborMode || soloLayer !== null) return;
+  if (!lastQuantResult || eraseAreaMode || copyNeighborMode || drawMode || soloLayer !== null) return;
   const rect  = stitchCanvas.getBoundingClientRect();
   const scaleX = stitchCanvas.width  / rect.width;
   const scaleY = stitchCanvas.height / rect.height;
@@ -991,12 +1006,18 @@ function showFeedback(msg, cls) {
 eraseBtn.addEventListener('click', () => {
   eraseAreaMode = !eraseAreaMode;
   eraseBtn.classList.toggle('active', eraseAreaMode);
-  // Two tools are mutually exclusive
+  // All three canvas tools are mutually exclusive
   if (eraseAreaMode && copyNeighborMode) {
     copyNeighborMode = false;
     copyNeighborBtn.classList.remove('active');
   }
-  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode);
+  if (eraseAreaMode && drawMode) {
+    drawMode = false;
+    drawBtn.classList.remove('active');
+    drawPanel.classList.add('hidden');
+    _drawDrag = null;
+  }
+  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode || drawMode);
   if (!eraseAreaMode) {
     _eraseDrag = null;
     clearEraseOverlay();
@@ -1006,12 +1027,18 @@ eraseBtn.addEventListener('click', () => {
 copyNeighborBtn.addEventListener('click', () => {
   copyNeighborMode = !copyNeighborMode;
   copyNeighborBtn.classList.toggle('active', copyNeighborMode);
-  // Two tools are mutually exclusive
+  // All three canvas tools are mutually exclusive
   if (copyNeighborMode && eraseAreaMode) {
     eraseAreaMode = false;
     eraseBtn.classList.remove('active');
   }
-  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode);
+  if (copyNeighborMode && drawMode) {
+    drawMode = false;
+    drawBtn.classList.remove('active');
+    drawPanel.classList.add('hidden');
+    _drawDrag = null;
+  }
+  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode || drawMode);
   if (!copyNeighborMode) {
     _eraseDrag = null;
     clearEraseOverlay();
@@ -1071,6 +1098,14 @@ soloBtn.addEventListener('click', () => {
   if (soloLayer !== null) {
     exitSoloMode();
     return;
+  }
+  // Exit draw mode when entering solo
+  if (drawMode) {
+    drawMode = false;
+    drawBtn.classList.remove('active');
+    drawPanel.classList.add('hidden');
+    _drawDrag = null;
+    eraseOverlay.classList.remove('active');
   }
   const order = getActiveColorOrder();
   if (order.length === 0) return;
@@ -1145,15 +1180,138 @@ stitchScrollWrap.addEventListener('wheel', e => {
   if (newIdx !== idx) { zoomLevel = ZOOM_STEPS[newIdx]; applyZoom(); }
 }, { passive: false });
 
+// ── Draw tool ─────────────────────────────────────────────────────────────────
+
+drawBtn.addEventListener('click', () => {
+  drawMode = !drawMode;
+  drawBtn.classList.toggle('active', drawMode);
+  if (drawMode) {
+    // All three canvas tools are mutually exclusive
+    eraseAreaMode = false;
+    copyNeighborMode = false;
+    eraseBtn.classList.remove('active');
+    copyNeighborBtn.classList.remove('active');
+    _eraseDrag = null;
+    clearEraseOverlay();
+    // Select first non-skipped color if current selection is invalid
+    if (lastQuantResult) {
+      const { palette } = lastQuantResult;
+      if (drawPaintColor !== 255 && (drawPaintColor >= palette.length || skipColors.has(drawPaintColor))) {
+        const first = Array.from({ length: palette.length }, (_, i) => i).find(i => !skipColors.has(i));
+        if (first !== undefined) drawPaintColor = first;
+      }
+      updateDrawPanel();
+    }
+    drawPanel.classList.remove('hidden');
+  } else {
+    drawPanel.classList.add('hidden');
+    _drawDrag = null;
+  }
+  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode || drawMode);
+});
+
+// Brush size buttons
+drawPanel.querySelectorAll('.draw-brush-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    drawBrushSize = parseInt(btn.dataset.size, 10);
+    drawPanel.querySelectorAll('.draw-brush-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+/**
+ * Rebuild the color-swatch row in the draw panel to reflect the current palette.
+ * Adds an eraser swatch (×) at the front, then one swatch per non-skipped color.
+ */
+function updateDrawPanel() {
+  if (!lastQuantResult) return;
+  const { palette, colorNames = [] } = lastQuantResult;
+  drawColorRow.innerHTML = '';
+
+  // Eraser swatch
+  const eraserEl = document.createElement('span');
+  eraserEl.className = 'draw-color-swatch eraser' + (drawPaintColor === 255 ? ' active' : '');
+  eraserEl.title = 'Erase (set transparent)';
+  eraserEl.textContent = '×';
+  eraserEl.addEventListener('click', () => {
+    drawPaintColor = 255;
+    drawColorRow.querySelectorAll('.draw-color-swatch').forEach(s => s.classList.remove('active'));
+    eraserEl.classList.add('active');
+  });
+  drawColorRow.appendChild(eraserEl);
+
+  palette.forEach(([r, g, b], i) => {
+    const el = document.createElement('span');
+    el.className = 'draw-color-swatch' + (drawPaintColor === i ? ' active' : '');
+    el.style.background = `rgb(${r},${g},${b})`;
+    el.title = colorNames[i] || `Color ${i + 1}`;
+    el.addEventListener('click', () => {
+      drawPaintColor = i;
+      drawColorRow.querySelectorAll('.draw-color-swatch').forEach(s => s.classList.remove('active'));
+      el.classList.add('active');
+    });
+    drawColorRow.appendChild(el);
+  });
+}
+
+/**
+ * Paint a square brush of side `drawBrushSize` centred on (px, py) into indexMap.
+ * colorIdx = 255 erases (makes transparent).
+ */
+function applyBrushPaint(px, py, colorIdx) {
+  if (!lastQuantResult) return;
+  const { indexMap, width, height } = lastQuantResult;
+  const r = Math.floor(drawBrushSize / 2);
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const x = px + dx, y = py + dy;
+      if (x < 0 || y < 0 || x >= width || y >= height) continue;
+      indexMap[y * width + x] = colorIdx;
+    }
+  }
+}
+
+/**
+ * Bresenham line interpolation between (x0,y0) and (x1,y1), painting at each step.
+ * Prevents gaps when the mouse moves faster than one pixel per event.
+ */
+function paintLine(x0, y0, x1, y1, colorIdx) {
+  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy, x = x0, y = y0;
+  for (;;) {
+    applyBrushPaint(x, y, colorIdx);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 <  dx) { err += dx; y += sy; }
+  }
+}
+
 /**
  * Start the erase drag.  We cache the bounding rect and scale factors here so
+ * subsequent mousemove events don't need to recompute them on every pixel move.  We cache the bounding rect and scale factors here so
  * subsequent mousemove events don't need to recompute them on every pixel move.
  */
 eraseOverlay.addEventListener('mousedown', e => {
-  if ((!eraseAreaMode && !copyNeighborMode) || !lastQuantResult) return;
+  if ((!eraseAreaMode && !copyNeighborMode && !drawMode) || !lastQuantResult) return;
   const rect   = eraseOverlay.getBoundingClientRect();
   const scaleX = lastQuantResult.width  / rect.width;
   const scaleY = lastQuantResult.height / rect.height;
+
+  if (drawMode) {
+    const cx = Math.round((e.clientX - rect.left) * scaleX);
+    const cy = Math.round((e.clientY - rect.top)  * scaleY);
+    const erasing = e.button === 2;  // right-click = erase
+    pushUndo();
+    _drawDrag = { rect, scaleX, scaleY, erasing, prevX: cx, prevY: cy };
+    applyBrushPaint(cx, cy, erasing ? 255 : drawPaintColor);
+    const { palette, indexMap, width, height } = lastQuantResult;
+    drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+    e.preventDefault();
+    return;
+  }
+
   _eraseDrag = {
     startX: Math.round((e.clientX - rect.left) * scaleX),
     startY: Math.round((e.clientY - rect.top)  * scaleY),
@@ -1162,10 +1320,24 @@ eraseOverlay.addEventListener('mousedown', e => {
   e.preventDefault();
 });
 
+// Suppress context menu on right-click over overlay (used for erase in draw mode)
+eraseOverlay.addEventListener('contextmenu', e => { if (drawMode) e.preventDefault(); });
+
 /**
  * Update the selection rectangle while the mouse moves (even outside the overlay).
  */
 document.addEventListener('mousemove', e => {
+  if (drawMode && _drawDrag) {
+    const { rect, scaleX, scaleY, erasing } = _drawDrag;
+    const cx = Math.round((e.clientX - rect.left) * scaleX);
+    const cy = Math.round((e.clientY - rect.top)  * scaleY);
+    paintLine(_drawDrag.prevX, _drawDrag.prevY, cx, cy, erasing ? 255 : drawPaintColor);
+    _drawDrag.prevX = cx;
+    _drawDrag.prevY = cy;
+    const { palette, indexMap, width, height } = lastQuantResult;
+    drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+    return;
+  }
   if (!_eraseDrag || (!eraseAreaMode && !copyNeighborMode)) return;
   const { startX, startY, rect, scaleX, scaleY } = _eraseDrag;
   const curX = Math.round((e.clientX - rect.left) * scaleX);
@@ -1174,9 +1346,17 @@ document.addEventListener('mousemove', e => {
 });
 
 /**
- * Finish the drag: dispatch to the active tool (erase or fill-neighbor).
+ * Finish the drag: dispatch to the active tool (erase, fill-neighbor, or draw).
  */
 document.addEventListener('mouseup', e => {
+  if (drawMode && _drawDrag) {
+    _drawDrag = null;
+    const { palette, indexMap, width, height, colorNames = [] } = lastQuantResult;
+    renderSwatches(palette, indexMap, skipColors, colorNames);
+    updateStitchPreview();
+    setStatus('Draw applied — Ctrl+Z to undo');
+    return;
+  }
   if (!_eraseDrag || (!eraseAreaMode && !copyNeighborMode)) return;
   const { startX, startY, rect, scaleX, scaleY } = _eraseDrag;
   const endX = Math.round((e.clientX - rect.left) * scaleX);
@@ -1524,6 +1704,7 @@ function applySnapshot(snap) {
         updateLayerNav();
       }
     }
+    if (drawMode) updateDrawPanel();
     previewSection.classList.remove('hidden');
     requestBox.classList.remove('hidden');
     exportBtn.disabled = false;
@@ -1572,8 +1753,8 @@ document.addEventListener('keydown', e => {
     }
     if (e.key === 'Escape') { exitSoloMode(); return; }
   }
-  // Escape exits either canvas-tool mode (and cancels any in-progress drag)
-  if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode)) {
+  // Escape exits any active canvas-tool mode (and cancels any in-progress drag)
+  if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode || drawMode)) {
     eraseAreaMode    = false;
     copyNeighborMode = false;
     eraseBtn.classList.remove('active');
@@ -1581,6 +1762,10 @@ document.addEventListener('keydown', e => {
     eraseOverlay.classList.remove('active');
     _eraseDrag = null;
     clearEraseOverlay();
+    drawMode = false;
+    drawBtn.classList.remove('active');
+    drawPanel.classList.add('hidden');
+    _drawDrag = null;
     return;
   }
   const mod = e.ctrlKey || e.metaKey;
