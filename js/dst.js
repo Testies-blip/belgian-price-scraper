@@ -94,47 +94,70 @@ function encodeDST(records, designName) {
 /**
  * Encode one stitch record into 3 bytes using DST bit layout.
  *
- * Each axis uses 5 bit-positions with weights {+1,-1, +9,-9, +3,-3, +27,-27, +81,-81}
- * distributed across byte 0 and byte 1.  Byte 2 holds the flag.
+ * Tajima DST uses a balanced-ternary scheme: each axis has five magnitude
+ * levels {1, 3, 9, 27, 81} (powers of 3) with independent + and − bits.
+ * Any integer in [−121, +121] is representable by combining these bits with
+ * mixed signs, e.g. 18 = +27−9, 79 = +81−3+1, 26 = +27−1.
+ *
+ * The PREVIOUS encoder was a simple greedy that only used positive bits and
+ * left remainders unencoded (e.g. 18 → 13, 79 → 40).  Those errors accumulate
+ * over many stitches, shifting every subsequent component by centimetres in the
+ * finished file — causing the scattered appearance seen in Bernina Designer.
+ *
+ * This version uses the correct balanced-ternary threshold at each level:
+ *   use +M when remaining ≥ ⌈M/2⌉  (i.e. 41, 14, 5, 2, 1 for M=81,27,9,3,1)
+ *   use −M when remaining ≤ −⌈M/2⌉
+ * which gives exact representation for every integer in [−121, +121].
  *
  * Bit layout (standard Tajima DST):
- *   Byte 0: [y+1][y-1][y+9][y-9][x-9][x+9][x-1][x+1]
- *   Byte 1: [y+3][y-3][y+27][y-27][x-27][x+27][x-3][x+3]
- *   Byte 2: flag  (with bits 7-6 controlling command type, bits 5-0 hold +81/-81)
- *
- * Simplified layout used here (matches most DST readers):
- *   Byte 0 bits [7..0]: y+1, y-1, y+9, y-9, x-9, x+9, x-1, x+1
- *   Byte 1 bits [7..0]: y+3, y-3, y+27, y-27, x-27, x+27, x-3, x+3
- *   Byte 2 = flag | (y+81 bit at 5 | y-81 bit at 4 | x-81 bit at 3 | x+81 bit at 2)
+ *   Byte 0 [7..0]: y+1, y-1, y+9, y-9, x-9, x+9, x-1, x+1
+ *   Byte 1 [7..0]: y+3, y-3, y+27, y-27, x-27, x+27, x-3, x+3
+ *   Byte 2        = flag | y+81(bit5) | y-81(bit4) | x-81(bit3) | x+81(bit2)
  */
 function encodeDSTRecord(dx, dy, flag) {
   let b0 = 0, b1 = 0, b2 = flag;
 
-  // Encode X
-  let x = dx;
-  if (x >= 81)  { b2 |= 0x04; x -= 81; }
-  if (x <= -81) { b2 |= 0x08; x += 81; }
-  if (x >= 27)  { b1 |= 0x04; x -= 27; }
-  if (x <= -27) { b1 |= 0x08; x += 27; }
-  if (x >= 9)   { b0 |= 0x04; x -= 9;  }
-  if (x <= -9)  { b0 |= 0x08; x += 9;  }
-  if (x >= 3)   { b1 |= 0x01; x -= 3;  }
-  if (x <= -3)  { b1 |= 0x02; x += 3;  }
-  if (x >= 1)   { b0 |= 0x01; x -= 1;  }
-  if (x <= -1)  { b0 |= 0x02; x += 1;  }
+  /**
+   * Balanced-ternary encode for one axis.
+   * Returns [d81, d27, d9, d3, d1], each element ∈ {−1, 0, +1}.
+   */
+  function encodeAxis(v) {
+    const result = [0, 0, 0, 0, 0];
+    const MAGS  = [81, 27, 9, 3, 1];
+    const HALFS = [41, 14, 5, 2, 1];   // ceil(M / 2) — threshold to use this level
+    for (let i = 0; i < 5; i++) {
+      if      (v >=  HALFS[i]) { result[i] = +1; v -= MAGS[i]; }
+      else if (v <= -HALFS[i]) { result[i] = -1; v += MAGS[i]; }
+    }
+    return result;   // any well-formed input leaves v === 0 at the end
+  }
 
-  // Encode Y (positive Y = up in DST)
-  let y = dy;
-  if (y >= 81)  { b2 |= 0x20; y -= 81; }
-  if (y <= -81) { b2 |= 0x10; y += 81; }
-  if (y >= 27)  { b1 |= 0x20; y -= 27; }
-  if (y <= -27) { b1 |= 0x10; y += 27; }
-  if (y >= 9)   { b0 |= 0x20; y -= 9;  }
-  if (y <= -9)  { b0 |= 0x10; y += 9;  }
-  if (y >= 3)   { b1 |= 0x80; y -= 3;  }
-  if (y <= -3)  { b1 |= 0x40; y += 3;  }
-  if (y >= 1)   { b0 |= 0x80; y -= 1;  }
-  if (y <= -1)  { b0 |= 0x40; y += 1;  }
+  const xd = encodeAxis(dx);
+  const yd = encodeAxis(dy);
+
+  // ── X bits ──────────────────────────────────────────────────────────────────
+  if (xd[4] > 0) b0 |= 0x01;  // x+1
+  if (xd[4] < 0) b0 |= 0x02;  // x-1
+  if (xd[3] > 0) b1 |= 0x01;  // x+3
+  if (xd[3] < 0) b1 |= 0x02;  // x-3
+  if (xd[2] > 0) b0 |= 0x04;  // x+9
+  if (xd[2] < 0) b0 |= 0x08;  // x-9
+  if (xd[1] > 0) b1 |= 0x04;  // x+27
+  if (xd[1] < 0) b1 |= 0x08;  // x-27
+  if (xd[0] > 0) b2 |= 0x04;  // x+81
+  if (xd[0] < 0) b2 |= 0x08;  // x-81
+
+  // ── Y bits (positive Y = up in DST) ─────────────────────────────────────────
+  if (yd[4] > 0) b0 |= 0x80;  // y+1
+  if (yd[4] < 0) b0 |= 0x40;  // y-1
+  if (yd[3] > 0) b1 |= 0x80;  // y+3
+  if (yd[3] < 0) b1 |= 0x40;  // y-3
+  if (yd[2] > 0) b0 |= 0x20;  // y+9
+  if (yd[2] < 0) b0 |= 0x10;  // y-9
+  if (yd[1] > 0) b1 |= 0x20;  // y+27
+  if (yd[1] < 0) b1 |= 0x10;  // y-27
+  if (yd[0] > 0) b2 |= 0x20;  // y+81
+  if (yd[0] < 0) b2 |= 0x10;  // y-81
 
   return [b0, b1, b2];
 }
