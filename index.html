@@ -56,10 +56,18 @@
           <h3>Stitch preview <span class="stitch-hint">— click canvas or swatch to remove / restore a thread</span></h3>
           <button id="erase-btn" class="erase-btn" disabled title="Drag on canvas to erase an area from the design">&#9986; Erase Area</button>
           <button id="copy-neighbor-btn" class="erase-btn" disabled title="Drag to fill an area with the color surrounding it">&#9632; Fill Neighbor</button>
+          <button id="solo-btn" class="erase-btn" disabled title="Browse stitching layers one at a time (Esc to exit)">&#8801; Layers</button>
         </div>
         <div class="stitch-canvas-wrap">
           <canvas id="stitch-canvas"></canvas>
           <canvas id="erase-overlay"></canvas>
+        </div>
+        <div id="layer-nav" class="layer-nav hidden">
+          <button id="layer-prev-btn" class="layer-nav-btn" title="Previous layer (&#8592; arrow key)">&#9664;</button>
+          <span id="layer-color-dot" class="layer-color-dot"></span>
+          <span id="layer-color-name" class="layer-color-name"></span>
+          <span id="layer-index-label" class="layer-index-label"></span>
+          <button id="layer-next-btn" class="layer-nav-btn" title="Next layer (&#8594; arrow key)">&#9654;</button>
         </div>
       </div>
     </div>
@@ -137,6 +145,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=11"></script>
+  <script src="js/app.js?v=12"></script>
 </body>
 </html>

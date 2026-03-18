@@ -33,6 +33,13 @@ const segParts        = document.getElementById('seg-parts');
 const eraseBtn        = document.getElementById('erase-btn');
 const copyNeighborBtn = document.getElementById('copy-neighbor-btn');
 const eraseOverlay    = document.getElementById('erase-overlay');
+const soloBtn         = document.getElementById('solo-btn');
+const layerNav        = document.getElementById('layer-nav');
+const layerPrevBtn    = document.getElementById('layer-prev-btn');
+const layerNextBtn    = document.getElementById('layer-next-btn');
+const layerColorDot   = document.getElementById('layer-color-dot');
+const layerColorName  = document.getElementById('layer-color-name');
+const layerIndexLabel = document.getElementById('layer-index-label');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -64,6 +71,7 @@ let outlineOnly     = false;      // stitch outlines instead of fills
 let eraseAreaMode     = false;    // true while the drag-to-erase tool is active
 let copyNeighborMode  = false;    // true while the fill-neighbor tool is active
 let _eraseDrag        = null;     // { startX, startY, rect, scaleX, scaleY } while dragging
+let soloLayer         = null;     // null = show all layers; palette index = show only that layer
 
 // ── Undo / redo state ─────────────────────────────────────────────────────────
 const MAX_UNDO  = 20;
@@ -107,6 +115,10 @@ function handleFile(file) {
   eraseOverlay.classList.remove('active');
   _eraseDrag = null;
   clearEraseOverlay();
+  soloLayer = null;
+  soloBtn.classList.remove('active');
+  layerNav.classList.add('hidden');
+  soloBtn.disabled = true;
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
@@ -135,6 +147,11 @@ function runQuantize(img) {
   exportBtn.disabled       = true;
   eraseBtn.disabled        = true;
   copyNeighborBtn.disabled = true;
+  soloBtn.disabled         = true;
+  // Exit solo mode — palette/layout may change after re-quantize
+  soloLayer = null;
+  soloBtn.classList.remove('active');
+  layerNav.classList.add('hidden');
 
   setTimeout(() => {
     try {
@@ -172,6 +189,7 @@ function runQuantize(img) {
       exportBtn.disabled       = false;
       eraseBtn.disabled        = false;
       copyNeighborBtn.disabled = false;
+      soloBtn.disabled         = false;
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
       lastSegResult = null;          // invalidate any stale segmentation from previous quantize
       triggerSegmentation(canvas);   // async, non-blocking
@@ -291,7 +309,7 @@ function toggleColor(ci) {
 
 // Click on the stitch canvas → look up pixel → toggle that thread
 stitchCanvas.addEventListener('click', e => {
-  if (!lastQuantResult || eraseAreaMode) return;
+  if (!lastQuantResult || eraseAreaMode || copyNeighborMode || soloLayer !== null) return;
   const rect  = stitchCanvas.getBoundingClientRect();
   const scaleX = stitchCanvas.width  / rect.width;
   const scaleY = stitchCanvas.height / rect.height;
@@ -304,12 +322,25 @@ stitchCanvas.addEventListener('click', e => {
   toggleColor(ci);
 });
 
-// Click on a palette swatch → toggle that thread
+// Click on a palette swatch → toggle that thread (or switch solo layer when in solo mode)
 swatchContainer.addEventListener('click', e => {
   const swatch = e.target.closest('[data-color-idx]');
   if (!swatch) return;
   const ci = parseInt(swatch.dataset.colorIdx, 10);
-  if (!isNaN(ci)) toggleColor(ci);
+  if (isNaN(ci)) return;
+  if (soloLayer !== null) {
+    // In solo mode: clicking a swatch jumps to viewing that color's layer
+    if (!skipColors.has(ci) && lastQuantResult) {
+      const order = getActiveColorOrder();
+      if (order.includes(ci)) {
+        soloLayer = ci;
+        updateLayerNav();
+        updateStitchPreview();
+      }
+    }
+    return;
+  }
+  toggleColor(ci);
 });
 
 // ── Export ────────────────────────────────────────────────────────────────────
@@ -792,21 +823,24 @@ function updateStitchPreview() {
     .filter(i => counts[i] > 0 && !skipColors.has(i))
     .sort((a, b) => counts[b] - counts[a]);
 
-  renderStitchPreview(records, palette, colorOrder, width, height);
+  renderStitchPreview(records, palette, colorOrder, width, height, soloLayer);
+  if (soloLayer !== null) updateLayerNav();
 }
 
 /**
  * Draw the stitch records onto the stitch preview canvas.
- * Stitches are drawn as coloured lines; jump moves are skipped.
+ * Stitches are drawn as coloured lines; jump moves are shown as gray dashes
+ * (suppressed in solo mode for a cleaner single-layer view).
  * A subtle 10 mm grid is rendered behind the stitches.
  *
- * @param {Array}    records     Output of generateStitches()
- * @param {number[][]} palette   [r,g,b] entries
- * @param {number[]} colorOrder  Palette indices in the order they appear in records
- * @param {number}   w           Working canvas width in pixels
- * @param {number}   h           Working canvas height in pixels
+ * @param {Array}    records       Output of generateStitches()
+ * @param {number[][]} palette     [r,g,b] entries
+ * @param {number[]} colorOrder    Palette indices in the order they appear in records
+ * @param {number}   w             Working canvas width in pixels
+ * @param {number}   h             Working canvas height in pixels
+ * @param {number|null} soloColorIdx  null = all layers; palette index = solo that layer
  */
-function renderStitchPreview(records, palette, colorOrder, w, h) {
+function renderStitchPreview(records, palette, colorOrder, w, h, soloColorIdx = null) {
   stitchCanvas.width  = w;
   stitchCanvas.height = h;
   // Keep overlay dimensions in sync so coordinate mapping is always correct
@@ -831,10 +865,22 @@ function renderStitchPreview(records, palette, colorOrder, w, h) {
 
   if (colorOrder.length === 0) return;
 
+  // Helper: set strokeStyle for a given phase index, respecting solo mode.
+  // Non-solo layers become fully transparent so their paths produce no visible output.
+  const _setStroke = ph => {
+    const palIdx = colorOrder[ph];
+    if (soloColorIdx !== null && palIdx !== soloColorIdx) {
+      ctx.strokeStyle = 'rgba(0,0,0,0)';
+    } else {
+      const [r, g, b] = palette[palIdx] || [0, 0, 0];
+      ctx.strokeStyle = `rgb(${r},${g},${b})`;
+    }
+  };
+
   // ── Pass 1: jump moves as thin dashed gray lines ───────────────────────────
-  // DST viewers (e.g. Bernina Designer) show needle-travel paths between
-  // stitching regions.  Rendering them here keeps the preview in sync.
-  {
+  // Suppressed in solo mode — jump lines clutter the single-layer view and
+  // originate from all layers, not just the one being inspected.
+  if (soloColorIdx === null) {
     ctx.save();
     ctx.setLineDash([3, 4]);
     ctx.lineWidth   = 0.6;
@@ -871,9 +917,8 @@ function renderStitchPreview(records, palette, colorOrder, w, h) {
   ctx.lineCap    = 'round';
   ctx.lineJoin   = 'round';
 
-  // Start first path
-  const firstColor = palette[colorOrder[0]] || [0, 0, 0];
-  ctx.strokeStyle = `rgb(${firstColor[0]},${firstColor[1]},${firstColor[2]})`;
+  // Start first path with the appropriate color (or transparent if non-solo)
+  _setStroke(phase);
   ctx.beginPath();
 
   for (const rec of records) {
@@ -886,8 +931,7 @@ function renderStitchPreview(records, palette, colorOrder, w, h) {
       ctx.stroke();
       phase++;
       if (phase < colorOrder.length) {
-        const [r, g, b] = palette[colorOrder[phase]] || [0, 0, 0];
-        ctx.strokeStyle = `rgb(${r},${g},${b})`;
+        _setStroke(phase);
         ctx.beginPath();
       }
       prevIsJump = true;
@@ -956,6 +1000,89 @@ copyNeighborBtn.addEventListener('click', () => {
   if (!copyNeighborMode) {
     _eraseDrag = null;
     clearEraseOverlay();
+  }
+});
+
+// ── Layer solo tool ───────────────────────────────────────────────────────────
+
+/**
+ * Returns non-skipped palette indices that have at least one pixel in the
+ * current indexMap, sorted by pixel count descending (same order as stitcher).
+ * @returns {number[]}
+ */
+function getActiveColorOrder() {
+  if (!lastQuantResult) return [];
+  const { palette, indexMap } = lastQuantResult;
+  const k = palette.length;
+  const counts = new Array(k).fill(0);
+  for (let i = 0; i < indexMap.length; i++) {
+    if (indexMap[i] < k) counts[indexMap[i]]++;
+  }
+  return Array.from({ length: k }, (_, i) => i)
+    .filter(i => counts[i] > 0 && !skipColors.has(i))
+    .sort((a, b) => counts[b] - counts[a]);
+}
+
+/**
+ * Exit solo mode and return to showing all layers.
+ */
+function exitSoloMode() {
+  soloLayer = null;
+  soloBtn.classList.remove('active');
+  layerNav.classList.add('hidden');
+  updateStitchPreview();
+}
+
+/**
+ * Refresh the layer navigation bar to reflect the current soloLayer.
+ * Should be called whenever soloLayer changes or when the preview is re-rendered
+ * while in solo mode.
+ */
+function updateLayerNav() {
+  if (soloLayer === null || !lastQuantResult) return;
+  const order = getActiveColorOrder();
+  const pos = order.indexOf(soloLayer);
+  if (pos === -1) { exitSoloMode(); return; }  // layer was removed — bail out
+
+  const [r, g, b] = lastQuantResult.palette[soloLayer];
+  layerColorDot.style.background = `rgb(${r},${g},${b})`;
+  layerColorName.textContent = lastQuantResult.colorNames[soloLayer] || `Color ${soloLayer + 1}`;
+  layerIndexLabel.textContent = `${pos + 1} / ${order.length}`;
+  layerPrevBtn.disabled = pos === 0;
+  layerNextBtn.disabled = pos === order.length - 1;
+}
+
+soloBtn.addEventListener('click', () => {
+  if (soloLayer !== null) {
+    exitSoloMode();
+    return;
+  }
+  const order = getActiveColorOrder();
+  if (order.length === 0) return;
+  soloLayer = order[0];
+  soloBtn.classList.add('active');
+  layerNav.classList.remove('hidden');
+  updateLayerNav();
+  updateStitchPreview();
+});
+
+layerPrevBtn.addEventListener('click', () => {
+  const order = getActiveColorOrder();
+  const pos = order.indexOf(soloLayer);
+  if (pos > 0) {
+    soloLayer = order[pos - 1];
+    updateLayerNav();
+    updateStitchPreview();
+  }
+});
+
+layerNextBtn.addEventListener('click', () => {
+  const order = getActiveColorOrder();
+  const pos = order.indexOf(soloLayer);
+  if (pos < order.length - 1) {
+    soloLayer = order[pos + 1];
+    updateLayerNav();
+    updateStitchPreview();
   }
 });
 
@@ -1327,6 +1454,17 @@ function applySnapshot(snap) {
     drawQuantizedPreview(palette, indexMap, width, height, skipColors);
     renderSwatches(palette, indexMap, skipColors, colorNames);
     updateStitchPreview();
+    // Revalidate solo mode — the restored state may have removed the active layer
+    if (soloLayer !== null) {
+      const newOrder = getActiveColorOrder();
+      if (!newOrder.includes(soloLayer)) {
+        soloLayer = null;
+        soloBtn.classList.remove('active');
+        layerNav.classList.add('hidden');
+      } else {
+        updateLayerNav();
+      }
+    }
     previewSection.classList.remove('hidden');
     requestBox.classList.remove('hidden');
     exportBtn.disabled = false;
@@ -1357,6 +1495,24 @@ undoBtn.addEventListener('click', undo);
 redoBtn.addEventListener('click', redo);
 
 document.addEventListener('keydown', e => {
+  // Solo mode: ArrowLeft / ArrowRight navigate between layers; Escape exits
+  if (soloLayer !== null) {
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const order = getActiveColorOrder();
+      const pos = order.indexOf(soloLayer);
+      if (pos > 0) { soloLayer = order[pos - 1]; updateLayerNav(); updateStitchPreview(); }
+      return;
+    }
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      const order = getActiveColorOrder();
+      const pos = order.indexOf(soloLayer);
+      if (pos < order.length - 1) { soloLayer = order[pos + 1]; updateLayerNav(); updateStitchPreview(); }
+      return;
+    }
+    if (e.key === 'Escape') { exitSoloMode(); return; }
+  }
   // Escape exits either canvas-tool mode (and cancels any in-progress drag)
   if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode)) {
     eraseAreaMode    = false;
