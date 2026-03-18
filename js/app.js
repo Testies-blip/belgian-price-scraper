@@ -297,28 +297,27 @@ swatchContainer.addEventListener('click', e => {
 
 // ── Export ────────────────────────────────────────────────────────────────────
 function runExport() {
-  if (!loadedImage) return;
+  // Use lastQuantResult so the DST output is pixel-identical to the stitch preview.
+  // Any edits the user made (gum tool, NLP region merges, colour commands) are
+  // already baked into lastQuantResult.indexMap — no re-quantisation needed.
+  if (!lastQuantResult) return;
   setStatus('Generating stitches…');
   exportBtn.disabled = true;
 
   setTimeout(() => {
     try {
-      const { canvas } = buildWorkingCanvas(loadedImage);
-      const ctx = canvas.getContext('2d');
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const { palette, indexMap, width, height } = lastQuantResult;
 
-      const k           = clampInt(Number(colorsInput.value), 2, 16);
-      const densityMm   = Math.max(0.2, Math.min(2.0, Number(densityInput.value) || 0.4));
-      const stitchMm    = Math.max(1.0, Math.min(6.0,  Number(stitchInput.value)  || 3.0));
+      // Mirror the exact same parameters used by updateStitchPreview()
+      const densityMm   = Math.max(0.2, Math.min(2.0, Number(densityInput.value) || 0.3));
+      const stitchMm    = Math.max(1.0, Math.min(6.0,  Number(stitchInput.value)  || 2.5));
       const PX_PER_MM   = 5;
       const pitchPx     = Math.max(1, Math.round(densityMm * PX_PER_MM));
       const stitchLenPx = Math.max(1, Math.round(stitchMm  * PX_PER_MM));
-
-      let { palette, indexMap } = quantizeImage(imageData, k);
-      indexMap = smoothIndexMap(indexMap, canvas.width, canvas.height, k);
       const fillAngleDeg = clampInt(Number(angleInput.value), 0, 89);
+
       const records = generateStitches(
-        indexMap, canvas.width, canvas.height, palette,
+        indexMap, width, height, palette,
         { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg }
       );
 
