@@ -60,6 +60,8 @@ const selectionCount     = document.getElementById('selection-count');
 const selectionColorRow  = document.getElementById('selection-color-row');
 const selectionCancelBtn = document.getElementById('selection-cancel-btn');
 const selectionEraseBtn  = document.getElementById('selection-erase-btn');
+const selectionMergeBtn  = document.getElementById('selection-merge-btn');
+const stitchInfoEl       = document.getElementById('stitch-info');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -97,6 +99,8 @@ const ZOOM_STEPS      = [1, 1.5, 2, 3, 4];
 let currentStage      = 1;       // 1 = Picture Enhancer, 2 = Stitch Converter
 let selectAreaMode    = false;   // true while the flood-fill select tool is active
 let selectedPixels    = null;    // Set<number> of selected pixel indices, or null
+let mergeMode         = false;   // true while waiting for user to click a merge-target region
+let lockedColors      = new Set(); // palette indices excluded from NLP / requantize recoloring
 let drawMode          = false;    // true while draw/paint tool is active
 let drawPaintColor    = 0;        // palette index to paint (255 = erase)
 let drawBrushSize     = 1;        // brush square side: 1, 3 or 5 px
@@ -193,6 +197,7 @@ function handleFile(file) {
   selectOverlayEl.classList.remove('active');
   selectAreaBtn.disabled = true;
   skipColors.clear();
+  lockedColors.clear();
   outlineOnly = false;
   lastSegResult = null;
   segStatus.classList.add('hidden');
@@ -258,22 +263,68 @@ selectionEraseBtn.addEventListener('click', () => {
   setStatus(`Erased ${n.toLocaleString()} pixel${n !== 1 ? 's' : ''} — Ctrl+Z to undo`);
 });
 
+selectionMergeBtn.addEventListener('click', () => {
+  if (!selectedPixels || !lastQuantResult) return;
+  mergeMode = !mergeMode;
+  selectionMergeBtn.classList.toggle('active', mergeMode);
+  if (mergeMode) {
+    setStatus('Click any region to recolor all its pixels to match the selected area\u2019s color');
+  } else {
+    setStatus(`${selectedPixels.size.toLocaleString()} pixel${selectedPixels.size !== 1 ? 's' : ''} selected`);
+  }
+});
+
 /**
- * Click on the select overlay to flood-fill select a connected same-color region.
+ * Click on the select overlay to flood-fill select a connected same-color region,
+ * or (in merge mode) recolor all pixels of the clicked color to the selection's color.
  */
 selectOverlayEl.addEventListener('click', e => {
   if (!selectAreaMode || !lastQuantResult) return;
   const rect = selectOverlayEl.getBoundingClientRect();
-  const { indexMap, width, height } = lastQuantResult;
+  const { indexMap, width, height, palette, colorNames = [] } = lastQuantResult;
   const px = Math.floor((e.clientX - rect.left) * (width  / rect.width));
   const py = Math.floor((e.clientY - rect.top)  * (height / rect.height));
   if (px < 0 || py < 0 || px >= width || py >= height) return;
-  const targetColor = indexMap[py * width + px];
-  if (targetColor === 255) return;  // transparent — nothing to select
-  selectedPixels = floodFill(px, py, targetColor, indexMap, width, height);
+  const clickedColor = indexMap[py * width + px];
+  if (clickedColor === 255) return;  // transparent — nothing to act on
+
+  if (mergeMode && selectedPixels) {
+    // Find the color of the selected region (the first selected pixel's color index)
+    const firstIdx = selectedPixels.values().next().value;
+    const targetColorIdx = indexMap[firstIdx];
+    if (clickedColor === targetColorIdx) {
+      // Clicked same color — exit merge mode
+      mergeMode = false;
+      selectionMergeBtn.classList.remove('active');
+      return;
+    }
+    pushUndo();
+    let changed = 0;
+    for (let i = 0; i < indexMap.length; i++) {
+      if (indexMap[i] === clickedColor) { indexMap[i] = targetColorIdx; changed++; }
+    }
+    const srcLabel  = colorNames[clickedColor]  || `color ${clickedColor + 1}`;
+    const destLabel = colorNames[targetColorIdx] || `color ${targetColorIdx + 1}`;
+    drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+    renderSwatches(palette, indexMap, skipColors, colorNames);
+    // Update the selection overlay because the indexMap changed
+    selectedPixels = floodFill(
+      firstIdx % width, (firstIdx / width) | 0, targetColorIdx, indexMap, width, height
+    );
+    drawSelectionOverlay();
+    updateSelectionPanel();
+    mergeMode = false;
+    selectionMergeBtn.classList.remove('active');
+    setStatus(`Merged ${srcLabel} into ${destLabel} (${changed.toLocaleString()} px) — Ctrl+Z to undo`);
+    return;
+  }
+
+  selectedPixels = floodFill(px, py, clickedColor, indexMap, width, height);
   drawSelectionOverlay();
   selectionPanel.classList.remove('hidden');
   updateSelectionPanel();
+  mergeMode = false;
+  selectionMergeBtn.classList.remove('active');
   setStatus(`${selectedPixels.size.toLocaleString()} pixel${selectedPixels.size !== 1 ? 's' : ''} selected`);
 });
 
@@ -298,6 +349,8 @@ function applyRecolorSelection(newColorIdx) {
  */
 function clearSelection() {
   selectedPixels = null;
+  mergeMode = false;
+  selectionMergeBtn.classList.remove('active');
   selectionPanel.classList.add('hidden');
   selectOverlayEl.classList.toggle('active', selectAreaMode);
   const ctx = selectOverlayEl.getContext('2d');
@@ -511,9 +564,10 @@ function renderSwatches(palette, indexMap, skippedColors, colorNames = []) {
   palette.forEach(([r, g, b], i) => {
     const pct     = total > 0 ? Math.round((counts[i] / total) * 100) : 0;
     const skipped = skippedColors.has(i);
+    const locked  = lockedColors.has(i);
     const name    = colorNames[i] || '';
     const div = document.createElement('div');
-    div.className = 'swatch' + (skipped ? ' swatch--skipped' : '');
+    div.className = 'swatch' + (skipped ? ' swatch--skipped' : '') + (locked ? ' swatch--locked' : '');
     div.title = name
       ? `${name} — ${skipped ? 'click to restore' : 'click to remove'}`
       : (skipped ? 'Click to restore thread' : 'Click to remove thread');
@@ -523,7 +577,8 @@ function renderSwatches(palette, indexMap, skippedColors, colorNames = []) {
       <span class="swatch-info${skipped ? ' swatch-info--skip' : ''}">
         ${name ? `<span class="swatch-name">${name}</span>` : ''}
         <span class="swatch-pct">${pct}%</span>
-      </span>`;
+      </span>
+      <button class="swatch-lock-btn" data-lock-idx="${i}" title="${locked ? 'Locked — NLP commands won\'t change this color. Click to unlock.' : 'Lock this color to protect it from NLP changes'}">${locked ? '\uD83D\uDD12' : '\uD83D\uDD13'}</button>`;
     swatchContainer.appendChild(div);
   });
 }
@@ -563,10 +618,27 @@ stitchCanvas.addEventListener('click', e => {
   toggleColor(ci);
 });
 
+// Click the lock button on a swatch — intercept before the swatch toggle fires
+swatchContainer.addEventListener('click', e => {
+  const lockBtn = e.target.closest('[data-lock-idx]');
+  if (!lockBtn) return;
+  e.stopPropagation();
+  const ci = parseInt(lockBtn.dataset.lockIdx, 10);
+  if (isNaN(ci) || !lastQuantResult) return;
+  if (lockedColors.has(ci)) {
+    lockedColors.delete(ci);
+  } else {
+    lockedColors.add(ci);
+  }
+  const { palette, indexMap, colorNames = [] } = lastQuantResult;
+  renderSwatches(palette, indexMap, skipColors, colorNames);
+}, true); // capture phase so it fires before the bubble handler below
+
 // Click on a palette swatch → toggle that thread (or switch solo layer when in solo mode)
 swatchContainer.addEventListener('click', e => {
   const swatch = e.target.closest('[data-color-idx]');
   if (!swatch) return;
+  if (e.target.closest('[data-lock-idx]')) return;  // handled above
   const ci = parseInt(swatch.dataset.colorIdx, 10);
   if (isNaN(ci)) return;
   if (soloLayer !== null) {
@@ -860,10 +932,13 @@ function applyRequest(text) {
       const keepOnly = /\b(keep\s+only|only\s+keep|show\s+only|only\s+show|just\s+keep|keep\s+just)\b/.test(t) ||
                        (/\bonly\b/.test(t) && intRestore && !intRemove);
 
+      // Remove locked indices from matched set so they aren't affected
+      lockedColors.forEach(i => matchedIndices.delete(i));
+
       if (matchedIndices.size > 0) {
         if (keepOnly) {
           skipColors.clear();
-          colorNames.forEach((_, i) => { if (!matchedIndices.has(i)) skipColors.add(i); });
+          colorNames.forEach((_, i) => { if (!matchedIndices.has(i) && !lockedColors.has(i)) skipColors.add(i); });
           changes.push(`kept only ${[...new Set(foundFamilies)].join(', ')}`);
           previewOnly = true;
         } else if (intRemove && !intRestore) {
@@ -987,6 +1062,14 @@ function applyRequest(text) {
     return;
   }
 
+  // ── Smooth edges ─────────────────────────────────────────────────────────────
+  if (/\bsmooth\b/.test(t) && lastQuantResult) {
+    const { indexMap, width, height, palette } = lastQuantResult;
+    lastQuantResult.indexMap = smoothIndexMap(indexMap, width, height, palette.length);
+    changes.push('edges smoothed');
+    previewOnly = true;
+  }
+
   // ── Reset to defaults ────────────────────────────────────────────────────────
   if (/\b(reset\s+(all|everything)|start\s+over)\b/.test(t) ||
       (t.trim() === 'reset' && changes.length === 0)) {
@@ -996,6 +1079,7 @@ function applyRequest(text) {
     stitchInput.value  = 2.5;
     angleInput.value   = 45;
     skipColors.clear();
+    lockedColors.clear();
     outlineOnly        = false;
     changes.push('reset to defaults');
     needsRequantize    = true;
@@ -1067,6 +1151,13 @@ function updateStitchPreview() {
 
   renderStitchPreview(records, palette, colorOrder, width, height, soloLayer);
   if (soloLayer !== null) updateLayerNav();
+
+  // Update stitch count + physical size readout
+  const stitchCount = records.filter(r => r.type === 'STITCH').length;
+  const PX_PER_MM_DISPLAY = 5;
+  const wMm = Math.round(width  / PX_PER_MM_DISPLAY);
+  const hMm = Math.round(height / PX_PER_MM_DISPLAY);
+  stitchInfoEl.textContent = `${wMm}\u2009\xd7\u2009${hMm}\u2009mm \u00b7 ${stitchCount.toLocaleString()} stitches`;
 }
 
 /**
@@ -1862,12 +1953,13 @@ function getRegionPixels(groupPartIds, segResult) {
 
 function captureState() {
   return {
-    widthMm:    widthInput.value,
-    numColors:  colorsInput.value,
-    densityMm:  densityInput.value,
-    stitchMm:   stitchInput.value,
-    fillAngle:  angleInput.value,
-    skipColors: new Set(skipColors),
+    widthMm:      widthInput.value,
+    numColors:    colorsInput.value,
+    densityMm:    densityInput.value,
+    stitchMm:     stitchInput.value,
+    fillAngle:    angleInput.value,
+    skipColors:   new Set(skipColors),
+    lockedColors: new Set(lockedColors),
     outlineOnly,
     quantResult: lastQuantResult ? {
       palette:  lastQuantResult.palette.map(c => [...c]),
@@ -1895,6 +1987,8 @@ function applySnapshot(snap) {
   angleInput.value   = snap.fillAngle;
   skipColors.clear();
   snap.skipColors.forEach(ci => skipColors.add(ci));
+  lockedColors.clear();
+  if (snap.lockedColors) snap.lockedColors.forEach(ci => lockedColors.add(ci));
   outlineOnly = snap.outlineOnly;
   if (snap.quantResult) {
     lastQuantResult = {

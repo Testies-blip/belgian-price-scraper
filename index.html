@@ -59,6 +59,7 @@
                 <span class="selection-label">Recolor:</span>
                 <div id="selection-color-row" class="selection-color-row"></div>
                 <button id="selection-erase-btn" class="selection-erase-btn">Erase</button>
+                <button id="selection-merge-btn" class="selection-merge-btn" title="Click another region to merge all pixels of that color into this selection&#x27;s color">Merge color &rarr;</button>
               </div>
             </div>
           </div>
@@ -92,6 +93,7 @@
           <button class="chip" data-cmd="looser rows">Looser rows</button>
           <button class="chip" data-cmd="45 diagonal">45&deg; fill</button>
           <button class="chip" data-cmd="horizontal fill">0&deg; fill</button>
+          <button class="chip" data-cmd="smooth edges">Smooth</button>
         </div>
         <div class="request-row">
           <input type="text" id="request-input"
@@ -129,6 +131,7 @@
 
       <div class="stage2-topbar">
         <button id="back-btn" class="back-btn">&larr; Edit Image</button>
+        <span id="stitch-info" class="stitch-info"></span>
         <button id="export-btn" class="export-btn" disabled>Export .DST</button>
       </div>
 
@@ -207,6 +210,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=16"></script>
+  <script src="js/app.js?v=17"></script>
 </body>
 </html>

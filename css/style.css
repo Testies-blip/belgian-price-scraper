@@ -692,7 +692,7 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   white-space: nowrap;
 }
 .back-btn:hover { background: var(--bg); }
-.stage2-topbar .export-btn { margin-left: auto; }
+/* stitch-info takes flex: 1, pushing export-btn to the right automatically */
 
 /* Global status bar at the very bottom */
 .status-bar {
@@ -834,3 +834,52 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   flex-shrink: 0;
 }
 .selection-erase-btn:hover { background: #fff2f0; }
+
+/* ── Merge-color button ──────────────────────────────────────────────────── */
+.selection-merge-btn {
+  padding: 0.18rem 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  flex-shrink: 0;
+}
+.selection-merge-btn:hover { background: var(--bg); color: var(--text); }
+.selection-merge-btn.active {
+  background: #fff8e1;
+  border-color: #f0a500;
+  color: #8a5c00;
+}
+
+/* ── Lock button on palette swatches ────────────────────────────────────── */
+.swatch-lock-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+  color: var(--muted);
+  opacity: 0.35;
+  transition: opacity 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+.swatch-lock-btn:hover { opacity: 1; }
+.swatch--locked .swatch-lock-btn { opacity: 1; color: #2a6dd9; }
+
+/* ── Stitch count / size readout ────────────────────────────────────────── */
+.stitch-info {
+  font-size: 0.78rem;
+  color: var(--muted);
+  flex: 1;
+  text-align: center;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 480px) { .stitch-info { display: none; } }
