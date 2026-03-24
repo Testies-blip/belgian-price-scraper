@@ -48,11 +48,18 @@ const stitchCanvasWrapEl = document.getElementById('stitch-canvas-wrap');
 const drawBtn           = document.getElementById('draw-btn');
 const drawPanel         = document.getElementById('draw-panel');
 const drawColorRow      = document.getElementById('draw-color-row');
-const stage1El          = document.getElementById('stage-1');
-const stage2El          = document.getElementById('stage-2');
-const convertBtn        = document.getElementById('convert-btn');
-const backBtn           = document.getElementById('back-btn');
-const stage1Bar         = document.getElementById('stage1-bar');
+const stage1El           = document.getElementById('stage-1');
+const stage2El           = document.getElementById('stage-2');
+const convertBtn         = document.getElementById('convert-btn');
+const backBtn            = document.getElementById('back-btn');
+const stage1Bar          = document.getElementById('stage1-bar');
+const selectAreaBtn      = document.getElementById('select-area-btn');
+const selectOverlayEl    = document.getElementById('select-overlay');
+const selectionPanel     = document.getElementById('selection-panel');
+const selectionCount     = document.getElementById('selection-count');
+const selectionColorRow  = document.getElementById('selection-color-row');
+const selectionCancelBtn = document.getElementById('selection-cancel-btn');
+const selectionEraseBtn  = document.getElementById('selection-erase-btn');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -88,6 +95,8 @@ let soloLayer         = null;     // null = show all layers; palette index = sho
 let zoomLevel         = 1.0;     // current zoom; one of ZOOM_STEPS
 const ZOOM_STEPS      = [1, 1.5, 2, 3, 4];
 let currentStage      = 1;       // 1 = Picture Enhancer, 2 = Stitch Converter
+let selectAreaMode    = false;   // true while the flood-fill select tool is active
+let selectedPixels    = null;    // Set<number> of selected pixel indices, or null
 let drawMode          = false;    // true while draw/paint tool is active
 let drawPaintColor    = 0;        // palette index to paint (255 = erase)
 let drawBrushSize     = 1;        // brush square side: 1, 3 or 5 px
@@ -177,6 +186,12 @@ function handleFile(file) {
   stage1Bar.classList.add('hidden');
   convertBtn.disabled = true;
   exportBtn.disabled = true;
+  selectAreaMode = false;
+  selectAreaBtn.classList.remove('active');
+  selectedPixels = null;
+  selectionPanel.classList.add('hidden');
+  selectOverlayEl.classList.remove('active');
+  selectAreaBtn.disabled = true;
   skipColors.clear();
   outlineOnly = false;
   lastSegResult = null;
@@ -215,6 +230,140 @@ function handleFile(file) {
   reader.readAsDataURL(file);
 }
 
+// ── Area-select tool ──────────────────────────────────────────────────────────
+
+selectAreaBtn.addEventListener('click', () => {
+  selectAreaMode = !selectAreaMode;
+  selectAreaBtn.classList.toggle('active', selectAreaMode);
+  selectOverlayEl.classList.toggle('active', selectAreaMode || selectedPixels !== null);
+  if (!selectAreaMode) clearSelection();
+});
+
+selectionCancelBtn.addEventListener('click', () => {
+  selectAreaMode = false;
+  selectAreaBtn.classList.remove('active');
+  clearSelection();
+});
+
+selectionEraseBtn.addEventListener('click', () => {
+  if (!selectedPixels || !lastQuantResult) return;
+  pushUndo();
+  const { indexMap } = lastQuantResult;
+  for (const idx of selectedPixels) { indexMap[idx] = 255; }
+  const n = selectedPixels.size;
+  const { palette, width, height, colorNames = [] } = lastQuantResult;
+  drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+  renderSwatches(palette, indexMap, skipColors, colorNames);
+  clearSelection();
+  setStatus(`Erased ${n.toLocaleString()} pixel${n !== 1 ? 's' : ''} — Ctrl+Z to undo`);
+});
+
+/**
+ * Click on the select overlay to flood-fill select a connected same-color region.
+ */
+selectOverlayEl.addEventListener('click', e => {
+  if (!selectAreaMode || !lastQuantResult) return;
+  const rect = selectOverlayEl.getBoundingClientRect();
+  const { indexMap, width, height } = lastQuantResult;
+  const px = Math.floor((e.clientX - rect.left) * (width  / rect.width));
+  const py = Math.floor((e.clientY - rect.top)  * (height / rect.height));
+  if (px < 0 || py < 0 || px >= width || py >= height) return;
+  const targetColor = indexMap[py * width + px];
+  if (targetColor === 255) return;  // transparent — nothing to select
+  selectedPixels = floodFill(px, py, targetColor, indexMap, width, height);
+  drawSelectionOverlay();
+  selectionPanel.classList.remove('hidden');
+  updateSelectionPanel();
+  setStatus(`${selectedPixels.size.toLocaleString()} pixel${selectedPixels.size !== 1 ? 's' : ''} selected`);
+});
+
+/**
+ * Recolor all selected pixels to newColorIdx, then clear the selection.
+ */
+function applyRecolorSelection(newColorIdx) {
+  if (!selectedPixels || !lastQuantResult) return;
+  pushUndo();
+  const { indexMap, palette, width, height, colorNames = [] } = lastQuantResult;
+  for (const idx of selectedPixels) { indexMap[idx] = newColorIdx; }
+  const n = selectedPixels.size;
+  const colorLabel = (lastQuantResult.colorNames || [])[newColorIdx] || `color ${newColorIdx + 1}`;
+  drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+  renderSwatches(palette, indexMap, skipColors, colorNames);
+  clearSelection();
+  setStatus(`Recolored ${n.toLocaleString()} pixel${n !== 1 ? 's' : ''} to ${colorLabel} — Ctrl+Z to undo`);
+}
+
+/**
+ * Clear the active selection: hide overlay and panel, reset state.
+ */
+function clearSelection() {
+  selectedPixels = null;
+  selectionPanel.classList.add('hidden');
+  selectOverlayEl.classList.toggle('active', selectAreaMode);
+  const ctx = selectOverlayEl.getContext('2d');
+  ctx.clearRect(0, 0, selectOverlayEl.width, selectOverlayEl.height);
+}
+
+/**
+ * Draw a semi-transparent dark mask over all non-selected pixels so the
+ * selection stands out against the rest of the quantized preview.
+ */
+function drawSelectionOverlay() {
+  if (!selectedPixels || !lastQuantResult) return;
+  const { width, height } = lastQuantResult;
+  selectOverlayEl.width  = width;
+  selectOverlayEl.height = height;
+  const ctx  = selectOverlayEl.getContext('2d');
+  const data = ctx.createImageData(width, height);
+  for (let i = 0; i < width * height; i++) {
+    if (!selectedPixels.has(i)) {
+      data.data[i * 4 + 3] = 130;   // semi-transparent black dims unselected pixels
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+  selectOverlayEl.classList.add('active');
+}
+
+/**
+ * Rebuild the recolor swatch row and pixel-count label in the selection panel.
+ */
+function updateSelectionPanel() {
+  if (!lastQuantResult || !selectedPixels) return;
+  const { palette, colorNames = [] } = lastQuantResult;
+  selectionCount.textContent = `${selectedPixels.size.toLocaleString()} px selected`;
+  selectionColorRow.innerHTML = '';
+  palette.forEach(([r, g, b], i) => {
+    const el = document.createElement('span');
+    el.className = 'selection-color-swatch';
+    el.style.background = `rgb(${r},${g},${b})`;
+    el.title = (colorNames[i] || `Color ${i + 1}`) + ' — click to recolor selection';
+    el.addEventListener('click', () => applyRecolorSelection(i));
+    selectionColorRow.appendChild(el);
+  });
+}
+
+/**
+ * Iterative flood fill (4-connected). Returns a Set of pixel indices.
+ */
+function floodFill(startX, startY, targetColor, indexMap, width, height) {
+  const selected = new Set();
+  const visited  = new Uint8Array(width * height);
+  const stack    = [startY * width + startX];
+  while (stack.length > 0) {
+    const idx = stack.pop();
+    if (visited[idx]) continue;
+    visited[idx] = 1;
+    if (indexMap[idx] !== targetColor) continue;
+    selected.add(idx);
+    const x = idx % width, y = (idx / width) | 0;
+    if (x > 0)          stack.push(idx - 1);
+    if (x < width - 1)  stack.push(idx + 1);
+    if (y > 0)          stack.push(idx - width);
+    if (y < height - 1) stack.push(idx + width);
+  }
+  return selected;
+}
+
 // ── Rendering helpers ─────────────────────────────────────────────────────────
 
 function renderOriginal(img) {
@@ -229,6 +378,7 @@ function runQuantize(img) {
   setStatus('Quantizing…');
   convertBtn.disabled      = true;
   exportBtn.disabled       = true;
+  selectAreaBtn.disabled   = true;
   eraseBtn.disabled        = true;
   copyNeighborBtn.disabled = true;
   soloBtn.disabled         = true;
@@ -274,6 +424,12 @@ function runQuantize(img) {
       requestBox.classList.remove('hidden');
       stage1Bar.classList.remove('hidden');
       convertBtn.disabled = false;
+      // Clear any stale selection — indexMap just changed
+      selectedPixels = null;
+      selectionPanel.classList.add('hidden');
+      selectOverlayEl.classList.toggle('active', selectAreaMode);
+      selectOverlayEl.getContext('2d').clearRect(0, 0, selectOverlayEl.width, selectOverlayEl.height);
+      selectAreaBtn.disabled = false;
       if (drawMode) updateDrawPanel();
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
       lastSegResult = null;          // invalidate any stale segmentation from previous quantize
@@ -1810,6 +1966,13 @@ document.addEventListener('keydown', e => {
       return;
     }
     if (e.key === 'Escape') { exitSoloMode(); return; }
+  }
+  // Escape cancels the area selection tool
+  if (e.key === 'Escape' && (selectAreaMode || selectedPixels !== null)) {
+    selectAreaMode = false;
+    selectAreaBtn.classList.remove('active');
+    clearSelection();
+    return;
   }
   // Escape exits any active canvas-tool mode (and cancels any in-progress drag)
   if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode || drawMode)) {

@@ -41,9 +41,26 @@
             <canvas id="original-canvas"></canvas>
           </div>
           <div class="preview-panel">
-            <h3>Quantized preview</h3>
-            <canvas id="quantized-canvas"></canvas>
+            <div class="quant-header">
+              <h3>Quantized preview</h3>
+              <button id="select-area-btn" class="select-area-btn" disabled title="Click a region to select all connected same-colour pixels">&#10022; Select</button>
+            </div>
+            <div class="quant-canvas-wrap">
+              <canvas id="quantized-canvas"></canvas>
+              <canvas id="select-overlay" class="select-overlay"></canvas>
+            </div>
             <div id="palette-swatches" class="palette-swatches"></div>
+            <div id="selection-panel" class="selection-panel hidden">
+              <div class="selection-info">
+                <span id="selection-count" class="selection-count"></span>
+                <button id="selection-cancel-btn" class="selection-cancel-btn" title="Cancel selection (Esc)">&times; Cancel</button>
+              </div>
+              <div class="selection-actions">
+                <span class="selection-label">Recolor:</span>
+                <div id="selection-color-row" class="selection-color-row"></div>
+                <button id="selection-erase-btn" class="selection-erase-btn">Erase</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -190,6 +207,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=15"></script>
+  <script src="js/app.js?v=16"></script>
 </body>
 </html>
