@@ -48,6 +48,11 @@ const stitchCanvasWrapEl = document.getElementById('stitch-canvas-wrap');
 const drawBtn           = document.getElementById('draw-btn');
 const drawPanel         = document.getElementById('draw-panel');
 const drawColorRow      = document.getElementById('draw-color-row');
+const stage1El          = document.getElementById('stage-1');
+const stage2El          = document.getElementById('stage-2');
+const convertBtn        = document.getElementById('convert-btn');
+const backBtn           = document.getElementById('back-btn');
+const stage1Bar         = document.getElementById('stage1-bar');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -82,6 +87,7 @@ let _eraseDrag        = null;     // { startX, startY, rect, scaleX, scaleY } wh
 let soloLayer         = null;     // null = show all layers; palette index = show only that layer
 let zoomLevel         = 1.0;     // current zoom; one of ZOOM_STEPS
 const ZOOM_STEPS      = [1, 1.5, 2, 3, 4];
+let currentStage      = 1;       // 1 = Picture Enhancer, 2 = Stitch Converter
 let drawMode          = false;    // true while draw/paint tool is active
 let drawPaintColor    = 0;        // palette index to paint (255 = erase)
 let drawBrushSize     = 1;        // brush square side: 1, 3 or 5 px
@@ -115,9 +121,62 @@ dropZone.addEventListener('drop', e => {
 // ── Export button ─────────────────────────────────────────────────────────────
 exportBtn.addEventListener('click', runExport);
 
+// ── Stage navigation ───────────────────────────────────────────────────────────
+convertBtn.addEventListener('click', enterStage2);
+backBtn.addEventListener('click', enterStage1);
+
+function enterStage2() {
+  currentStage = 2;
+  stage1El.classList.add('hidden');
+  stage2El.classList.remove('hidden');
+  updateStitchPreview();
+  exportBtn.disabled       = !lastQuantResult;
+  eraseBtn.disabled        = !lastQuantResult;
+  copyNeighborBtn.disabled = !lastQuantResult;
+  soloBtn.disabled         = !lastQuantResult;
+  drawBtn.disabled         = !lastQuantResult;
+  applyZoom();
+}
+
+function enterStage1() {
+  currentStage = 1;
+  stage2El.classList.add('hidden');
+  stage1El.classList.remove('hidden');
+  // Deactivate all canvas tools so they don't linger on re-entry
+  if (eraseAreaMode || copyNeighborMode) {
+    eraseAreaMode    = false;
+    copyNeighborMode = false;
+    eraseBtn.classList.remove('active');
+    copyNeighborBtn.classList.remove('active');
+    clearEraseOverlay();
+    _eraseDrag = null;
+  }
+  if (drawMode) {
+    drawMode = false;
+    drawBtn.classList.remove('active');
+    drawPanel.classList.add('hidden');
+    _drawDrag = null;
+    eraseOverlay.classList.remove('active');
+  }
+  if (soloLayer !== null) {
+    soloLayer = null;
+    soloBtn.classList.remove('active');
+    layerNav.classList.add('hidden');
+  }
+}
+
 // ── File handling ─────────────────────────────────────────────────────────────
 function handleFile(file) {
   currentFile = file;
+  // Always return to stage 1 when a new file is loaded
+  if (currentStage === 2) {
+    currentStage = 1;
+    stage2El.classList.add('hidden');
+    stage1El.classList.remove('hidden');
+  }
+  stage1Bar.classList.add('hidden');
+  convertBtn.disabled = true;
+  exportBtn.disabled = true;
   skipColors.clear();
   outlineOnly = false;
   lastSegResult = null;
@@ -168,6 +227,7 @@ function renderOriginal(img) {
 
 function runQuantize(img) {
   setStatus('Quantizing…');
+  convertBtn.disabled      = true;
   exportBtn.disabled       = true;
   eraseBtn.disabled        = true;
   copyNeighborBtn.disabled = true;
@@ -209,16 +269,11 @@ function runQuantize(img) {
 
       drawQuantizedPreview(palette, indexMap, canvas.width, canvas.height, skipColors);
       renderSwatches(palette, indexMap, skipColors, colorNames);
-      updateStitchPreview();
 
       previewSection.classList.remove('hidden');
       requestBox.classList.remove('hidden');
-      exportBtn.disabled       = false;
-      eraseBtn.disabled        = false;
-      copyNeighborBtn.disabled = false;
-      soloBtn.disabled         = false;
-      applyZoom();   // re-enables zoom buttons and re-applies any active zoom width
-      drawBtn.disabled = false;
+      stage1Bar.classList.remove('hidden');
+      convertBtn.disabled = false;
       if (drawMode) updateDrawPanel();
       setStatus(`Ready — ${palette.length} colors, ${canvas.width}×${canvas.height} px working size`);
       lastSegResult = null;          // invalidate any stale segmentation from previous quantize
@@ -828,6 +883,7 @@ function applyRequest(text) {
  * onto the stitch preview canvas.
  */
 function updateStitchPreview() {
+  if (currentStage !== 2) return;
   if (!lastQuantResult) return;
   const { palette, indexMap, width, height } = lastQuantResult;
 
@@ -1707,7 +1763,9 @@ function applySnapshot(snap) {
     if (drawMode) updateDrawPanel();
     previewSection.classList.remove('hidden');
     requestBox.classList.remove('hidden');
-    exportBtn.disabled = false;
+    stage1Bar.classList.remove('hidden');
+    convertBtn.disabled = false;
+    if (currentStage === 2) exportBtn.disabled = false;
   }
   setStatus('Restored');
 }
@@ -1802,12 +1860,13 @@ function clampInt(v, lo, hi) {
   return Math.max(lo, Math.min(hi, Math.round(v) || lo));
 }
 
-// Re-run quantize preview when settings change (debounced)
+// Settings change listeners (debounced)
 let debounceTimer;
 let debounceUndoPushed = false;   // true = undo already saved for this edit session
-[widthInput, colorsInput, densityInput, stitchInput, angleInput].forEach(el => {
+
+// Width and colors → re-quantize (stage 1 settings)
+[widthInput, colorsInput].forEach(el => {
   el.addEventListener('input', () => {
-    // Capture the state once, BEFORE any keystroke in this editing session changes it
     if (!debounceUndoPushed && loadedImage && lastQuantResult) {
       pushUndo();
       debounceUndoPushed = true;
@@ -1815,7 +1874,25 @@ let debounceUndoPushed = false;   // true = undo already saved for this edit ses
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       debounceUndoPushed = false;
-      if (loadedImage) { exportBtn.disabled = true; runQuantize(loadedImage); }
+      if (loadedImage) {
+        convertBtn.disabled = true;
+        runQuantize(loadedImage);
+      }
+    }, 400);
+  });
+});
+
+// Density, stitch length, fill angle → re-render stitch preview only (stage 2 settings)
+[densityInput, stitchInput, angleInput].forEach(el => {
+  el.addEventListener('input', () => {
+    if (!debounceUndoPushed && loadedImage && lastQuantResult) {
+      pushUndo();
+      debounceUndoPushed = true;
+    }
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceUndoPushed = false;
+      if (currentStage === 2) updateStitchPreview();
     }, 400);
   });
 });

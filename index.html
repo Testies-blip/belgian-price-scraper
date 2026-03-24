@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Photo to Embroidery DST</title>
-  <link rel="stylesheet" href="css/style.css?v=7">
+  <link rel="stylesheet" href="css/style.css?v=8">
   <!-- BodyPix / TensorFlow.js — loaded lazily by segmenter.js on first image -->
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js" defer></script>
@@ -17,43 +17,107 @@
       <p class="subtitle">Drop a photo and export a .DST file for Bernina DesignerPlus</p>
     </header>
 
-    <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="Drop image here or click to browse">
-      <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
-      <div class="drop-zone-inner">
-        <svg class="drop-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="8" y="14" width="48" height="36" rx="4" stroke="currentColor" stroke-width="2.5"/>
-          <circle cx="22" cy="26" r="5" stroke="currentColor" stroke-width="2.5"/>
-          <path d="M8 40 L20 28 L32 38 L42 30 L56 40" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/>
-          <path d="M32 52 L32 62 M26 58 L32 64 L38 58" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-        <p class="drop-label">Drop JPG or PNG here</p>
-        <p class="drop-hint">or <span class="link-text">click to browse</span></p>
-      </div>
-    </div>
+    <!-- ── Stage 1 · Picture Enhancer ───────────────────────────────────── -->
+    <div id="stage-1" class="stage">
 
-    <div id="preview-section" class="preview-section hidden">
-      <div class="preview-row">
-        <div class="preview-panel">
-          <h3>Original</h3>
-          <canvas id="original-canvas"></canvas>
-        </div>
-        <div class="preview-panel">
-          <h3>Quantized preview</h3>
-          <canvas id="quantized-canvas"></canvas>
-          <div id="palette-swatches" class="palette-swatches"></div>
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="Drop image here or click to browse">
+        <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+        <div class="drop-zone-inner">
+          <svg class="drop-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="8" y="14" width="48" height="36" rx="4" stroke="currentColor" stroke-width="2.5"/>
+            <circle cx="22" cy="26" r="5" stroke="currentColor" stroke-width="2.5"/>
+            <path d="M8 40 L20 28 L32 38 L42 30 L56 40" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/>
+            <path d="M32 52 L32 62 M26 58 L32 64 L38 58" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <p class="drop-label">Drop JPG or PNG here</p>
+          <p class="drop-hint">or <span class="link-text">click to browse</span></p>
         </div>
       </div>
 
-      <!-- Segmentation status bar: hidden until an image is loaded -->
-      <div id="seg-status" class="seg-status hidden">
-        <span id="seg-icon" class="seg-icon" aria-hidden="true">◎</span>
-        <span id="seg-text" class="seg-text">Recognising figure…</span>
-        <div id="seg-parts" class="seg-parts"></div>
+      <div id="preview-section" class="preview-section hidden">
+        <div class="preview-row">
+          <div class="preview-panel">
+            <h3>Original</h3>
+            <canvas id="original-canvas"></canvas>
+          </div>
+          <div class="preview-panel">
+            <h3>Quantized preview</h3>
+            <canvas id="quantized-canvas"></canvas>
+            <div id="palette-swatches" class="palette-swatches"></div>
+          </div>
+        </div>
+
+        <!-- Segmentation status bar: hidden until an image is loaded -->
+        <div id="seg-status" class="seg-status hidden">
+          <span id="seg-icon" class="seg-icon" aria-hidden="true">&#9678;</span>
+          <span id="seg-text" class="seg-text">Recognising figure&hellip;</span>
+          <div id="seg-parts" class="seg-parts"></div>
+        </div>
+      </div>
+
+      <div id="request-box" class="request-box hidden">
+        <div class="request-header">
+          <label class="request-label" for="request-input">Request a change</label>
+          <div class="undo-row">
+            <button id="undo-btn" class="undo-btn" disabled title="Undo (Ctrl+Z)">&#8617; Undo</button>
+            <button id="redo-btn" class="undo-btn" disabled title="Redo (Ctrl+Y)">&#8618; Redo</button>
+          </div>
+        </div>
+        <div class="chips" id="chips">
+          <button class="chip" data-cmd="remove background">Remove bg</button>
+          <button class="chip" data-cmd="restore background">Restore bg</button>
+          <button class="chip" data-cmd="outline only">Outline</button>
+          <button class="chip" data-cmd="fill mode">Fill</button>
+          <button class="chip" data-cmd="reset everything">Reset</button>
+          <button class="chip" data-cmd="more colors">+ Colors</button>
+          <button class="chip" data-cmd="fewer colors">&minus; Colors</button>
+          <button class="chip" data-cmd="finer rows">Finer rows</button>
+          <button class="chip" data-cmd="looser rows">Looser rows</button>
+          <button class="chip" data-cmd="45 diagonal">45&deg; fill</button>
+          <button class="chip" data-cmd="horizontal fill">0&deg; fill</button>
+        </div>
+        <div class="request-row">
+          <input type="text" id="request-input"
+            placeholder='e.g. "pants in 1 color", "make the jacket 2 colours", "remove bg"'
+            autocomplete="off">
+          <button id="request-btn">Apply</button>
+        </div>
+        <p id="request-feedback" class="request-feedback"></p>
+      </div>
+
+      <details id="settings" class="settings">
+        <summary>Image settings</summary>
+        <div class="settings-grid">
+          <label>
+            Width
+            <span class="hint">mm</span>
+            <input type="number" id="width-mm" value="100" min="10" max="500" step="1">
+          </label>
+          <label>
+            Colors
+            <span class="hint">2&ndash;16</span>
+            <input type="number" id="num-colors" value="6" min="2" max="16" step="1">
+          </label>
+        </div>
+      </details>
+
+      <div id="stage1-bar" class="stage1-bar hidden">
+        <button id="convert-btn" class="convert-btn" disabled>Stitch Preview &rarr;</button>
+      </div>
+
+    </div><!-- /stage-1 -->
+
+    <!-- ── Stage 2 · Stitch Converter ───────────────────────────────────── -->
+    <div id="stage-2" class="stage hidden">
+
+      <div class="stage2-topbar">
+        <button id="back-btn" class="back-btn">&larr; Edit Image</button>
+        <button id="export-btn" class="export-btn" disabled>Export .DST</button>
       </div>
 
       <div class="preview-panel preview-panel--stitch">
         <div class="stitch-header">
-          <h3>Stitch preview <span class="stitch-hint">— click canvas or swatch to remove / restore a thread</span></h3>
+          <h3>Stitch preview <span class="stitch-hint">&mdash; click canvas to remove / restore a thread</span></h3>
           <button id="erase-btn" class="erase-btn" disabled title="Drag on canvas to erase an area from the design">&#9986; Erase Area</button>
           <button id="copy-neighbor-btn" class="erase-btn" disabled title="Drag to fill an area with the color surrounding it">&#9632; Fill Neighbor</button>
           <button id="solo-btn" class="erase-btn" disabled title="Browse stitching layers one at a time (Esc to exit)">&#8801; Layers</button>
@@ -90,73 +154,34 @@
           <span class="draw-panel-hint">right-click&#x202F;=&#x202F;erase</span>
         </div>
       </div>
-    </div>
 
-    <div id="request-box" class="request-box hidden">
-      <div class="request-header">
-        <label class="request-label" for="request-input">Request a change</label>
-        <div class="undo-row">
-          <button id="undo-btn" class="undo-btn" disabled title="Undo (Ctrl+Z)">↩ Undo</button>
-          <button id="redo-btn" class="undo-btn" disabled title="Redo (Ctrl+Y)">↪ Redo</button>
+      <details id="stitch-settings" class="settings" open>
+        <summary>Stitch settings</summary>
+        <div class="settings-grid">
+          <label>
+            Row density
+            <span class="hint">mm</span>
+            <input type="number" id="density-mm" value="0.3" min="0.2" max="2.0" step="0.1">
+          </label>
+          <label>
+            Stitch length
+            <span class="hint">mm</span>
+            <input type="number" id="stitch-mm" value="2.5" min="1.0" max="6.0" step="0.5">
+          </label>
+          <label>
+            Fill angle
+            <span class="hint">deg (0 = horiz, 45 = diag)</span>
+            <input type="number" id="fill-angle" value="45" min="0" max="89" step="15">
+          </label>
         </div>
-      </div>
-      <div class="chips" id="chips">
-        <button class="chip" data-cmd="remove background">Remove bg</button>
-        <button class="chip" data-cmd="restore background">Restore bg</button>
-        <button class="chip" data-cmd="outline only">Outline</button>
-        <button class="chip" data-cmd="fill mode">Fill</button>
-        <button class="chip" data-cmd="reset everything">Reset</button>
-        <button class="chip" data-cmd="more colors">+ Colors</button>
-        <button class="chip" data-cmd="fewer colors">− Colors</button>
-        <button class="chip" data-cmd="finer rows">Finer rows</button>
-        <button class="chip" data-cmd="looser rows">Looser rows</button>
-        <button class="chip" data-cmd="45 diagonal">45° fill</button>
-        <button class="chip" data-cmd="horizontal fill">0° fill</button>
-      </div>
-      <div class="request-row">
-        <input type="text" id="request-input"
-          placeholder='e.g. "pants in 1 color", "make the jacket 2 colours", "remove bg"'
-          autocomplete="off">
-        <button id="request-btn">Apply</button>
-      </div>
-      <p id="request-feedback" class="request-feedback"></p>
-    </div>
+      </details>
 
-    <details id="settings" class="settings">
-      <summary>Settings</summary>
-      <div class="settings-grid">
-        <label>
-          Width
-          <span class="hint">mm</span>
-          <input type="number" id="width-mm" value="100" min="10" max="500" step="1">
-        </label>
-        <label>
-          Colors
-          <span class="hint">2–16</span>
-          <input type="number" id="num-colors" value="6" min="2" max="16" step="1">
-        </label>
-        <label>
-          Row density
-          <span class="hint">mm</span>
-          <input type="number" id="density-mm" value="0.3" min="0.2" max="2.0" step="0.1">
-        </label>
-        <label>
-          Stitch length
-          <span class="hint">mm</span>
-          <input type="number" id="stitch-mm" value="2.5" min="1.0" max="6.0" step="0.5">
-        </label>
-        <label>
-          Fill angle
-          <span class="hint">deg (0 = horiz, 45 = diag)</span>
-          <input type="number" id="fill-angle" value="45" min="0" max="89" step="15">
-        </label>
-      </div>
-    </details>
+    </div><!-- /stage-2 -->
 
-    <div class="export-bar">
-      <button id="export-btn" class="export-btn" disabled>Export .DST</button>
+    <div class="status-bar">
       <span id="status" class="status">Load an image to get started</span>
     </div>
+
   </div>
 
   <script src="js/colornames.js?v=7"></script>
@@ -165,6 +190,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=14"></script>
+  <script src="js/app.js?v=15"></script>
 </body>
 </html>

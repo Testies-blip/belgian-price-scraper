@@ -649,3 +649,54 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   flex-shrink: 0;
 }
 @media (max-width: 600px) { .draw-panel-hint { display: none; } }
+
+/* ── Two-stage pipeline ──────────────────────────────────────────────────── */
+.stage { display: flex; flex-direction: column; gap: 1.5rem; }
+
+/* Stage 1 bottom bar — holds the Convert button */
+.stage1-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.convert-btn {
+  padding: 0.75rem 2rem;
+  background: var(--success);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.convert-btn:hover:not(:disabled) { background: #176d3a; }
+.convert-btn:disabled { background: #7fc0a0; cursor: not-allowed; }
+
+/* Stage 2 top bar — Back button on the left, Export on the right */
+.stage2-topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.back-btn {
+  padding: 0.55rem 1.1rem;
+  background: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.back-btn:hover { background: var(--bg); }
+.stage2-topbar .export-btn { margin-left: auto; }
+
+/* Global status bar at the very bottom */
+.status-bar {
+  display: flex;
+  align-items: center;
+  min-height: 1.4rem;
+}
