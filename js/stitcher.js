@@ -37,11 +37,9 @@ function generateStitches(indexMap, width, height, palette, opts) {
     outlineOnly  = false,
     minRegionPx  = 40,
     fillAngleDeg = 45,
+    colorAngles  = {},   // { paletteIndex: angleDeg } — per-color fill angle overrides
   } = opts;
   const k = palette.length;
-
-  // isDiag: any non-zero angle uses 45° anti-diagonal fill
-  const isDiag = (fillAngleDeg % 180) !== 0;
 
   // In outline mode use a finer pitch so the contour is continuous
   const effectivePitch = outlineOnly ? Math.max(1, Math.floor(pitchPx / 2)) : pitchPx;
@@ -60,6 +58,10 @@ function generateStitches(indexMap, width, height, palette, opts) {
 
   for (const colorIdx of colorOrder) {
     if (counts[colorIdx] === 0 || skipColors.has(colorIdx)) continue;
+
+    // Per-color fill angle: use colorAngles override if present, else global fillAngleDeg
+    const angleDeg = (colorAngles[colorIdx] !== undefined) ? colorAngles[colorIdx] : fillAngleDeg;
+    const isDiag   = (angleDeg % 180) !== 0;
 
     // Decompose into 4-connected components; discard tiny islands
     const components = findConnectedComponents(indexMap, width, height, colorIdx)

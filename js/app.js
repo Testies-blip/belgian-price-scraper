@@ -60,8 +60,14 @@ const selectionCount     = document.getElementById('selection-count');
 const selectionColorRow  = document.getElementById('selection-color-row');
 const selectionCancelBtn = document.getElementById('selection-cancel-btn');
 const selectionEraseBtn  = document.getElementById('selection-erase-btn');
-const selectionMergeBtn  = document.getElementById('selection-merge-btn');
-const stitchInfoEl       = document.getElementById('stitch-info');
+const selectionMergeBtn      = document.getElementById('selection-merge-btn');
+const selectionSelectAllBtn  = document.getElementById('selection-select-all-btn');
+const selectionGrowBtn       = document.getElementById('selection-grow-btn');
+const selectionShrinkBtn     = document.getElementById('selection-shrink-btn');
+const stitchInfoEl           = document.getElementById('stitch-info');
+const brightnessInput        = document.getElementById('brightness-val');
+const contrastInput          = document.getElementById('contrast-val');
+const threadAngleRows        = document.getElementById('thread-angle-rows');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -101,6 +107,17 @@ let selectAreaMode    = false;   // true while the flood-fill select tool is act
 let selectedPixels    = null;    // Set<number> of selected pixel indices, or null
 let mergeMode         = false;   // true while waiting for user to click a merge-target region
 let lockedColors      = new Set(); // palette indices excluded from NLP / requantize recoloring
+// Image pre-processing (applied in buildWorkingCanvas before quantize)
+let brightnessAdjust  = 100;    // 50-150; 100 = neutral
+let contrastAdjust    = 100;    // 50-150; 100 = neutral
+let sharpness         = 0;      // -1 = blur, 0 = neutral, +1 = sharpen
+let flipH             = false;
+let flipV             = false;
+let rotateCW          = 0;      // 0,1,2,3 × 90° clockwise
+// Per-color stitch angle (Stage 2); keys are palette indices, values are degrees
+let colorAngles       = {};
+// Thread catalog snapping
+let threadSnap        = null;   // null or array of {code,name,r,g,b} — snapped threads
 let drawMode          = false;    // true while draw/paint tool is active
 let drawPaintColor    = 0;        // palette index to paint (255 = erase)
 let drawBrushSize     = 1;        // brush square side: 1, 3 or 5 px
@@ -138,10 +155,32 @@ exportBtn.addEventListener('click', runExport);
 convertBtn.addEventListener('click', enterStage2);
 backBtn.addEventListener('click', enterStage1);
 
+function renderThreadPanel() {
+  if (!lastQuantResult) return;
+  const { palette, colorNames = [] } = lastQuantResult;
+  threadAngleRows.innerHTML = '';
+  palette.forEach(([r, g, b], i) => {
+    if (skipColors.has(i)) return;
+    const row = document.createElement('div');
+    row.className = 'thread-angle-row';
+    const angle = colorAngles[i] !== undefined ? colorAngles[i] : '';
+    const snap  = threadSnap ? threadSnap[i] : null;
+    row.innerHTML = `
+      <span class="thread-angle-swatch" style="background:rgb(${r},${g},${b})"></span>
+      <span class="thread-angle-name">${snap ? `${snap.code} ${snap.name}` : (colorNames[i] || `Color ${i + 1}`)}</span>
+      <input type="number" class="thread-angle-input" value="${angle}"
+             min="0" max="89" step="15" placeholder="—"
+             data-angle-idx="${i}" title="Fill angle for this thread (leave blank to use global)">
+      <span class="thread-angle-label">°</span>`;
+    threadAngleRows.appendChild(row);
+  });
+}
+
 function enterStage2() {
   currentStage = 2;
   stage1El.classList.add('hidden');
   stage2El.classList.remove('hidden');
+  renderThreadPanel();
   updateStitchPreview();
   exportBtn.disabled       = !lastQuantResult;
   eraseBtn.disabled        = !lastQuantResult;
@@ -199,6 +238,10 @@ function handleFile(file) {
   skipColors.clear();
   lockedColors.clear();
   outlineOnly = false;
+  brightnessAdjust = 100; brightnessInput.value = 100;
+  contrastAdjust   = 100; contrastInput.value   = 100;
+  sharpness = 0; flipH = false; flipV = false; rotateCW = 0;
+  colorAngles = {}; threadSnap = null;
   lastSegResult = null;
   segStatus.classList.add('hidden');
   eraseAreaMode    = false;
@@ -395,6 +438,59 @@ function updateSelectionPanel() {
   });
 }
 
+// ── Selection grow / shrink / select-all ──────────────────────────────────────
+
+selectionSelectAllBtn.addEventListener('click', () => {
+  if (!selectedPixels || !lastQuantResult) return;
+  const { indexMap, width, height } = lastQuantResult;
+  const firstIdx = selectedPixels.values().next().value;
+  const targetColor = indexMap[firstIdx];
+  const all = new Set();
+  for (let p = 0; p < indexMap.length; p++) {
+    if (indexMap[p] === targetColor) all.add(p);
+  }
+  selectedPixels = all;
+  drawSelectionOverlay();
+  updateSelectionPanel();
+  setStatus(`All ${all.size.toLocaleString()} px of that color selected`);
+});
+
+selectionGrowBtn.addEventListener('click', () => {
+  if (!selectedPixels || !lastQuantResult) return;
+  const { indexMap, width, height } = lastQuantResult;
+  const grown = new Set(selectedPixels);
+  for (const idx of selectedPixels) {
+    const x = idx % width, y = (idx / width) | 0;
+    if (x > 0          && indexMap[idx - 1]     !== 255) grown.add(idx - 1);
+    if (x < width - 1  && indexMap[idx + 1]     !== 255) grown.add(idx + 1);
+    if (y > 0          && indexMap[idx - width]  !== 255) grown.add(idx - width);
+    if (y < height - 1 && indexMap[idx + width]  !== 255) grown.add(idx + width);
+  }
+  selectedPixels = grown;
+  drawSelectionOverlay();
+  updateSelectionPanel();
+  setStatus(`Grew selection to ${grown.size.toLocaleString()} px`);
+});
+
+selectionShrinkBtn.addEventListener('click', () => {
+  if (!selectedPixels || !lastQuantResult) return;
+  const { indexMap, width, height } = lastQuantResult;
+  // Remove pixels that have any non-selected 4-neighbour
+  const shrunk = new Set();
+  for (const idx of selectedPixels) {
+    const x = idx % width, y = (idx / width) | 0;
+    const allIn = (x === 0          || selectedPixels.has(idx - 1))
+               && (x === width - 1  || selectedPixels.has(idx + 1))
+               && (y === 0          || selectedPixels.has(idx - width))
+               && (y === height - 1 || selectedPixels.has(idx + width));
+    if (allIn) shrunk.add(idx);
+  }
+  selectedPixels = shrunk;
+  drawSelectionOverlay();
+  updateSelectionPanel();
+  setStatus(`Shrunk selection to ${shrunk.size.toLocaleString()} px`);
+});
+
 /**
  * Iterative flood fill (4-connected). Returns a Set of pixel indices.
  */
@@ -523,16 +619,138 @@ function smoothIndexMap(indexMap, width, height, k) {
   return out;
 }
 
+/**
+ * Find all 4-connected regions smaller than `threshold` pixels and
+ * reassign each to the most common color among its immediate border neighbors.
+ */
+function mergeSmallRegions(indexMap, width, height, k, threshold) {
+  const out = new Uint8Array(indexMap);
+  const visited = new Uint8Array(indexMap.length);
+  for (let start = 0; start < indexMap.length; start++) {
+    if (visited[start] || indexMap[start] >= k) { visited[start] = 1; continue; }
+    // BFS to find the connected component
+    const color = indexMap[start];
+    const region = [];
+    const queue = [start];
+    while (queue.length) {
+      const idx = queue.pop();
+      if (visited[idx]) continue;
+      visited[idx] = 1;
+      if (indexMap[idx] !== color) continue;
+      region.push(idx);
+      const x = idx % width, y = (idx / width) | 0;
+      if (x > 0)          queue.push(idx - 1);
+      if (x < width - 1)  queue.push(idx + 1);
+      if (y > 0)          queue.push(idx - width);
+      if (y < height - 1) queue.push(idx + width);
+    }
+    if (region.length >= threshold) continue;
+    // Find dominant border color
+    const neighborCount = new Int32Array(k);
+    for (const idx of region) {
+      const x = idx % width, y = (idx / width) | 0;
+      const neighbors = [];
+      if (x > 0)          neighbors.push(idx - 1);
+      if (x < width - 1)  neighbors.push(idx + 1);
+      if (y > 0)          neighbors.push(idx - width);
+      if (y < height - 1) neighbors.push(idx + width);
+      for (const n of neighbors) {
+        const nc = indexMap[n];
+        if (nc < k && nc !== color) neighborCount[nc]++;
+      }
+    }
+    let bestColor = color, bestCount = 0;
+    for (let c = 0; c < k; c++) {
+      if (neighborCount[c] > bestCount) { bestCount = neighborCount[c]; bestColor = c; }
+    }
+    for (const idx of region) out[idx] = bestColor;
+  }
+  return out;
+}
+
 function buildWorkingCanvas(img) {
   const targetMm  = Math.max(10, Math.min(500, Number(widthInput.value) || 100));
   const PX_PER_MM = 5;
   const scale     = (targetMm * PX_PER_MM) / Math.max(img.width, img.height);
-  const w = Math.round(img.width  * scale);
-  const h = Math.round(img.height * scale);
+  // Scaled source dimensions (before rotation)
+  const imgW = Math.round(img.width  * scale);
+  const imgH = Math.round(img.height * scale);
+  // Output dimensions swap when rotated 90° or 270°
+  const needsSwap = rotateCW % 2 === 1;
+  const w = needsSwap ? imgH : imgW;
+  const h = needsSwap ? imgW : imgH;
+
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
-  canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+  const ctx = canvas.getContext('2d');
+
+  // Apply flip + rotate transforms centered on the output canvas
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  if (rotateCW) ctx.rotate(rotateCW * Math.PI / 2);
+  if (flipH) ctx.scale(-1, 1);
+  if (flipV) ctx.scale(1, -1);
+  ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH);
+  ctx.restore();
+
+  // Apply brightness / contrast
+  if (brightnessAdjust !== 100 || contrastAdjust !== 100) {
+    const id = ctx.getImageData(0, 0, w, h);
+    applyBrightnessContrast(id.data, brightnessAdjust, contrastAdjust);
+    ctx.putImageData(id, 0, 0);
+  }
+  // Apply sharpen or blur
+  if (sharpness !== 0) {
+    const id = ctx.getImageData(0, 0, w, h);
+    const out = applyConvolution(id.data, w, h, sharpness > 0 ? SHARPEN_KERNEL : BLUR_KERNEL);
+    ctx.putImageData(new ImageData(out, w, h), 0, 0);
+  }
+
   return { canvas, w, h };
+}
+
+// ── Image filter helpers ──────────────────────────────────────────────────────
+
+const SHARPEN_KERNEL = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+const BLUR_KERNEL    = [1,  1, 1,  1, 1,  1, 1,  1, 1];   // divided by 9 inside fn
+
+function applyBrightnessContrast(data, brightness, contrast) {
+  const bDelta  = brightness - 100;
+  const cFactor = contrast / 100;
+  for (let i = 0; i < data.length; i += 4) {
+    for (let c = 0; c < 3; c++) {
+      let v = data[i + c];
+      v = (v - 128) * cFactor + 128 + bDelta;
+      data[i + c] = Math.max(0, Math.min(255, Math.round(v)));
+    }
+  }
+}
+
+function applyConvolution(data, w, h, kernel) {
+  const out  = new Uint8ClampedArray(data.length);
+  const kDiv = kernel.reduce((a, b) => a + b, 0) || 1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 0, g = 0, b = 0;
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          const nx = Math.max(0, Math.min(w - 1, x + kx));
+          const ny = Math.max(0, Math.min(h - 1, y + ky));
+          const k  = kernel[(ky + 1) * 3 + (kx + 1)];
+          const bi = (ny * w + nx) * 4;
+          r += data[bi]     * k;
+          g += data[bi + 1] * k;
+          b += data[bi + 2] * k;
+        }
+      }
+      const oi = (y * w + x) * 4;
+      out[oi]     = Math.max(0, Math.min(255, Math.round(r / kDiv)));
+      out[oi + 1] = Math.max(0, Math.min(255, Math.round(g / kDiv)));
+      out[oi + 2] = Math.max(0, Math.min(255, Math.round(b / kDiv)));
+      out[oi + 3] = data[oi + 3];
+    }
+  }
+  return out;
 }
 
 function drawQuantizedPreview(palette, indexMap, w, h, skippedColors) {
@@ -555,10 +773,74 @@ function drawQuantizedPreview(palette, indexMap, w, h, skippedColors) {
   ctx.putImageData(out, 0, 0);
 }
 
+// ── Thread catalog (Madeira Classic Polyester — curated subset) ──────────────
+const MADEIRA_THREADS = [
+  {code:'1000',name:'White',          r:255,g:255,b:255},
+  {code:'1001',name:'Ecru',           r:242,g:232,b:210},
+  {code:'1070',name:'Pale Yellow',    r:255,g:245,b:160},
+  {code:'0114',name:'Yellow',         r:255,g:220,b:0  },
+  {code:'0163',name:'Deep Yellow',    r:235,g:185,b:0  },
+  {code:'0402',name:'Orange',         r:245,g:130,b:32 },
+  {code:'0334',name:'Dark Orange',    r:210,g:80, b:10 },
+  {code:'1308',name:'Salmon',         r:250,g:175,b:150},
+  {code:'0811',name:'Light Pink',     r:255,g:190,b:200},
+  {code:'0503',name:'Pink',           r:240,g:120,b:160},
+  {code:'0508',name:'Hot Pink',       r:230,g:30, b:120},
+  {code:'0600',name:'Red',            r:210,g:15, b:30 },
+  {code:'0511',name:'Dark Red',       r:160,g:15, b:30 },
+  {code:'0602',name:'Crimson',        r:185,g:10, b:60 },
+  {code:'0709',name:'Burgundy',       r:120,g:10, b:50 },
+  {code:'0808',name:'Mauve',          r:185,g:100,b:130},
+  {code:'0906',name:'Lavender',       r:195,g:165,b:215},
+  {code:'0910',name:'Purple',         r:130,g:60, b:170},
+  {code:'0712',name:'Dark Purple',    r:80, g:20, b:120},
+  {code:'1003',name:'Sky Blue',       r:160,g:210,b:245},
+  {code:'1014',name:'Light Blue',     r:100,g:165,b:220},
+  {code:'1005',name:'Blue',           r:30, g:100,b:190},
+  {code:'1006',name:'Royal Blue',     r:15, g:55, b:170},
+  {code:'1008',name:'Dark Blue',      r:10, g:30, b:130},
+  {code:'1015',name:'Navy',           r:10, g:20, b:80 },
+  {code:'1703',name:'Turquoise',      r:0,  g:185,b:210},
+  {code:'1307',name:'Teal',           r:0,  g:130,b:140},
+  {code:'1607',name:'Mint',           r:160,g:230,b:200},
+  {code:'1502',name:'Light Green',    r:115,g:200,b:120},
+  {code:'1305',name:'Green',          r:30, g:160,b:70 },
+  {code:'1304',name:'Dark Green',     r:15, g:100,b:40 },
+  {code:'1406',name:'Olive',          r:100,g:130,b:30 },
+  {code:'1408',name:'Dark Olive',     r:70, g:90, b:20 },
+  {code:'1912',name:'Khaki',          r:185,g:170,b:120},
+  {code:'2011',name:'Tan',            r:200,g:160,b:100},
+  {code:'2014',name:'Light Brown',    r:185,g:130,b:80 },
+  {code:'2102',name:'Brown',          r:145,g:85, b:40 },
+  {code:'2101',name:'Dark Brown',     r:95, g:50, b:20 },
+  {code:'1911',name:'Beige',          r:225,g:205,b:165},
+  {code:'1913',name:'Sand',           r:210,g:190,b:140},
+  {code:'1910',name:'Silver',         r:190,g:190,b:195},
+  {code:'1909',name:'Gray',           r:135,g:135,b:140},
+  {code:'1908',name:'Dark Gray',      r:80, g:80, b:85 },
+  {code:'1000B',name:'Black',         r:15, g:15, b:15 },
+];
+
+/**
+ * For each palette color, find the nearest Madeira thread by Euclidean RGB distance.
+ * Returns an array (same length as palette) of matched thread objects.
+ */
+function snapPaletteToThreads(palette) {
+  return palette.map(([r, g, b]) => {
+    let best = MADEIRA_THREADS[0], bestD = Infinity;
+    for (const t of MADEIRA_THREADS) {
+      const d = (r - t.r) ** 2 + (g - t.g) ** 2 + (b - t.b) ** 2;
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    return best;
+  });
+}
+
 function renderSwatches(palette, indexMap, skippedColors, colorNames = []) {
   const counts = new Array(palette.length).fill(0);
   for (const idx of indexMap) { if (idx < palette.length) counts[idx]++; }
   const total = counts.reduce((a, b) => a + b, 0);
+  const n = palette.length;
 
   swatchContainer.innerHTML = '';
   palette.forEach(([r, g, b], i) => {
@@ -566,6 +848,7 @@ function renderSwatches(palette, indexMap, skippedColors, colorNames = []) {
     const skipped = skippedColors.has(i);
     const locked  = lockedColors.has(i);
     const name    = colorNames[i] || '';
+    const snap    = threadSnap ? threadSnap[i] : null;
     const div = document.createElement('div');
     div.className = 'swatch' + (skipped ? ' swatch--skipped' : '') + (locked ? ' swatch--locked' : '');
     div.title = name
@@ -573,10 +856,15 @@ function renderSwatches(palette, indexMap, skippedColors, colorNames = []) {
       : (skipped ? 'Click to restore thread' : 'Click to remove thread');
     div.dataset.colorIdx = i;
     div.innerHTML = `
+      <span class="swatch-reorder-btns">
+        <button class="swatch-reorder-btn" data-reorder-up="${i}" title="Move up" ${i === 0 ? 'disabled' : ''}>&#9650;</button>
+        <button class="swatch-reorder-btn" data-reorder-down="${i}" title="Move down" ${i === n - 1 ? 'disabled' : ''}>&#9660;</button>
+      </span>
       <span class="swatch-color" style="background:rgb(${r},${g},${b});${skipped ? 'opacity:0.35' : ''}"></span>
       <span class="swatch-info${skipped ? ' swatch-info--skip' : ''}">
         ${name ? `<span class="swatch-name">${name}</span>` : ''}
         <span class="swatch-pct">${pct}%</span>
+        ${snap ? `<span class="thread-snap-tag">${snap.code} ${snap.name}</span>` : ''}
       </span>
       <button class="swatch-lock-btn" data-lock-idx="${i}" title="${locked ? 'Locked — NLP commands won\'t change this color. Click to unlock.' : 'Lock this color to protect it from NLP changes'}">${locked ? '\uD83D\uDD12' : '\uD83D\uDD13'}</button>`;
     swatchContainer.appendChild(div);
@@ -634,11 +922,68 @@ swatchContainer.addEventListener('click', e => {
   renderSwatches(palette, indexMap, skipColors, colorNames);
 }, true); // capture phase so it fires before the bubble handler below
 
+// Click the reorder buttons on a swatch
+swatchContainer.addEventListener('click', e => {
+  const upBtn   = e.target.closest('[data-reorder-up]');
+  const downBtn = e.target.closest('[data-reorder-down]');
+  const btn = upBtn || downBtn;
+  if (!btn) return;
+  e.stopPropagation();
+  if (!lastQuantResult) return;
+  const i = parseInt((upBtn || downBtn).dataset[upBtn ? 'reorderUp' : 'reorderDown'], 10);
+  const j = upBtn ? i - 1 : i + 1;
+  if (j < 0 || j >= lastQuantResult.palette.length) return;
+  swapPaletteColors(i, j);
+}, true);
+
+/**
+ * Swap two palette entries and remap indexMap accordingly.
+ * Updates skipColors, lockedColors, colorAngles, and threadSnap to match.
+ */
+function swapPaletteColors(i, j) {
+  if (!lastQuantResult) return;
+  pushUndo();
+  const { palette, indexMap, colorNames } = lastQuantResult;
+
+  // Swap palette + colorNames
+  [palette[i], palette[j]] = [palette[j], palette[i]];
+  [colorNames[i], colorNames[j]] = [colorNames[j], colorNames[i]];
+
+  // Remap indexMap
+  for (let p = 0; p < indexMap.length; p++) {
+    if (indexMap[p] === i) indexMap[p] = j;
+    else if (indexMap[p] === j) indexMap[p] = i;
+  }
+
+  // Remap Set/Map state
+  function swapInSet(s) {
+    const hadI = s.has(i), hadJ = s.has(j);
+    if (hadI !== hadJ) {
+      if (hadI) { s.delete(i); s.add(j); }
+      else      { s.delete(j); s.add(i); }
+    }
+  }
+  swapInSet(skipColors);
+  swapInSet(lockedColors);
+
+  const ai = colorAngles[i], aj = colorAngles[j];
+  if (ai !== undefined) colorAngles[j] = ai; else delete colorAngles[j];
+  if (aj !== undefined) colorAngles[i] = aj; else delete colorAngles[i];
+
+  if (threadSnap) [threadSnap[i], threadSnap[j]] = [threadSnap[j], threadSnap[i]];
+
+  drawQuantizedPreview(palette, indexMap, lastQuantResult.width, lastQuantResult.height, skipColors);
+  renderSwatches(palette, indexMap, skipColors, colorNames);
+  if (currentStage === 2) renderThreadPanel();
+  setStatus('Color order updated — Ctrl+Z to undo');
+}
+
 // Click on a palette swatch → toggle that thread (or switch solo layer when in solo mode)
 swatchContainer.addEventListener('click', e => {
   const swatch = e.target.closest('[data-color-idx]');
   if (!swatch) return;
   if (e.target.closest('[data-lock-idx]')) return;  // handled above
+  if (e.target.closest('[data-reorder-up]') || e.target.closest('[data-reorder-down]')) return;
   const ci = parseInt(swatch.dataset.colorIdx, 10);
   if (isNaN(ci)) return;
   if (soloLayer !== null) {
@@ -679,7 +1024,7 @@ function runExport() {
 
       const records = generateStitches(
         indexMap, width, height, palette,
-        { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg }
+        { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg, colorAngles }
       );
 
       const stitchCount = records.filter(r => r.type === 'STITCH').length;
@@ -1070,6 +1415,49 @@ function applyRequest(text) {
     previewOnly = true;
   }
 
+  // ── Clean small regions ───────────────────────────────────────────────────────
+  if (/\bclean\b/.test(t) && lastQuantResult) {
+    const { indexMap, width, height, palette } = lastQuantResult;
+    lastQuantResult.indexMap = mergeSmallRegions(indexMap, width, height, palette.length, 80);
+    changes.push('small regions merged');
+    previewOnly = true;
+  }
+
+  // ── Flip ─────────────────────────────────────────────────────────────────────
+  if (/\bflip\b/.test(t)) {
+    if (/\bvert(ical)?\b/.test(t) || /\bflip\s+v\b/i.test(t)) {
+      flipV = !flipV; changes.push(flipV ? 'flipped vertically' : 'flip V removed'); needsRequantize = true;
+    } else {
+      flipH = !flipH; changes.push(flipH ? 'flipped horizontally' : 'flip H removed'); needsRequantize = true;
+    }
+  }
+
+  // ── Rotate ───────────────────────────────────────────────────────────────────
+  if (/\brotate\b/.test(t) && !subAngle) {
+    rotateCW = (rotateCW + 1) % 4;
+    changes.push(`rotated ${rotateCW * 90}°`);
+    needsRequantize = true;
+  }
+
+  // ── Sharpen / blur ───────────────────────────────────────────────────────────
+  if (/\bsharpen\b/.test(t) && !/\bsmooth|blur\b/.test(t)) {
+    sharpness = 1; changes.push('sharpened'); needsRequantize = true;
+  }
+  if (/\bblur\b/.test(t)) {
+    sharpness = -1; changes.push('blurred'); needsRequantize = true;
+  }
+
+  // ── Snap to thread catalog ────────────────────────────────────────────────────
+  if (/\bthread|snap\b/.test(t) && lastQuantResult) {
+    threadSnap = snapPaletteToThreads(lastQuantResult.palette);
+    // Replace palette colors with matched thread colors
+    pushUndo();
+    threadSnap.forEach(({ r, g, b }, i) => { lastQuantResult.palette[i] = [r, g, b]; });
+    lastQuantResult.colorNames = lastQuantResult.palette.map(namedColorOf);
+    changes.push('snapped to Madeira threads');
+    previewOnly = true;
+  }
+
   // ── Reset to defaults ────────────────────────────────────────────────────────
   if (/\b(reset\s+(all|everything)|start\s+over)\b/.test(t) ||
       (t.trim() === 'reset' && changes.length === 0)) {
@@ -1078,6 +1466,10 @@ function applyRequest(text) {
     densityInput.value = 0.3;
     stitchInput.value  = 2.5;
     angleInput.value   = 45;
+    brightnessInput.value = 100; brightnessAdjust = 100;
+    contrastInput.value   = 100; contrastAdjust   = 100;
+    sharpness = 0; flipH = false; flipV = false; rotateCW = 0;
+    colorAngles = {}; threadSnap = null;
     skipColors.clear();
     lockedColors.clear();
     outlineOnly        = false;
@@ -1136,7 +1528,7 @@ function updateStitchPreview() {
   const fillAngleDeg = clampInt(Number(angleInput.value), 0, 89);
   const records = generateStitches(
     indexMap, width, height, palette,
-    { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg }
+    { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg, colorAngles }
   );
 
   // Rebuild the same color order as stitcher.js (sorted by pixel count desc)
@@ -1953,14 +2345,20 @@ function getRegionPixels(groupPartIds, segResult) {
 
 function captureState() {
   return {
-    widthMm:      widthInput.value,
-    numColors:    colorsInput.value,
-    densityMm:    densityInput.value,
-    stitchMm:     stitchInput.value,
-    fillAngle:    angleInput.value,
-    skipColors:   new Set(skipColors),
-    lockedColors: new Set(lockedColors),
+    widthMm:         widthInput.value,
+    numColors:       colorsInput.value,
+    densityMm:       densityInput.value,
+    stitchMm:        stitchInput.value,
+    fillAngle:       angleInput.value,
+    skipColors:      new Set(skipColors),
+    lockedColors:    new Set(lockedColors),
     outlineOnly,
+    brightnessAdjust,
+    contrastAdjust,
+    sharpness,
+    flipH, flipV, rotateCW,
+    colorAngles:     { ...colorAngles },
+    threadSnap:      threadSnap ? [...threadSnap] : null,
     quantResult: lastQuantResult ? {
       palette:  lastQuantResult.palette.map(c => [...c]),
       indexMap: new Uint8Array(lastQuantResult.indexMap),  // snapshot copy
@@ -1990,6 +2388,14 @@ function applySnapshot(snap) {
   lockedColors.clear();
   if (snap.lockedColors) snap.lockedColors.forEach(ci => lockedColors.add(ci));
   outlineOnly = snap.outlineOnly;
+  if (snap.brightnessAdjust !== undefined) { brightnessAdjust = snap.brightnessAdjust; brightnessInput.value = brightnessAdjust; }
+  if (snap.contrastAdjust   !== undefined) { contrastAdjust   = snap.contrastAdjust;   contrastInput.value   = contrastAdjust; }
+  if (snap.sharpness !== undefined) sharpness = snap.sharpness;
+  if (snap.flipH !== undefined) flipH = snap.flipH;
+  if (snap.flipV !== undefined) flipV = snap.flipV;
+  if (snap.rotateCW !== undefined) rotateCW = snap.rotateCW;
+  colorAngles = snap.colorAngles ? { ...snap.colorAngles } : {};
+  threadSnap  = snap.threadSnap ? [...snap.threadSnap] : null;
   if (snap.quantResult) {
     lastQuantResult = {
       ...snap.quantResult,
@@ -1998,6 +2404,7 @@ function applySnapshot(snap) {
     const { palette, indexMap, width, height, colorNames } = lastQuantResult;
     drawQuantizedPreview(palette, indexMap, width, height, skipColors);
     renderSwatches(palette, indexMap, skipColors, colorNames);
+    if (currentStage === 2) renderThreadPanel();
     updateStitchPreview();
     // Revalidate solo mode — the restored state may have removed the active layer
     if (soloLayer !== null) {
@@ -2152,4 +2559,33 @@ let debounceUndoPushed = false;   // true = undo already saved for this edit ses
       if (currentStage === 2) updateStitchPreview();
     }, 400);
   });
+});
+
+// Brightness / contrast inputs → re-quantize (debounced)
+[brightnessInput, contrastInput].forEach(el => {
+  el.addEventListener('input', () => {
+    brightnessAdjust = clampInt(Number(brightnessInput.value), 50, 150);
+    contrastAdjust   = clampInt(Number(contrastInput.value),   50, 150);
+    if (!debounceUndoPushed) { pushUndo(); debounceUndoPushed = true; }
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceUndoPushed = false;
+      if (loadedImage) runQuantize(loadedImage);
+    }, 500);
+  });
+});
+
+// Thread-angle inputs in Stage 2 panel → update colorAngles + re-render
+threadAngleRows.addEventListener('input', e => {
+  const input = e.target.closest('[data-angle-idx]');
+  if (!input) return;
+  const ci  = parseInt(input.dataset.angleIdx, 10);
+  const raw = input.value.trim();
+  if (raw === '') {
+    delete colorAngles[ci];
+  } else {
+    colorAngles[ci] = Math.max(0, Math.min(89, parseInt(raw, 10) || 0));
+  }
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => updateStitchPreview(), 400);
 });

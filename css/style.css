@@ -883,3 +883,96 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   text-overflow: ellipsis;
 }
 @media (max-width: 480px) { .stitch-info { display: none; } }
+
+/* ── Select-all / Grow / Shrink selection buttons ───────────────────────── */
+.selection-select-all-btn,
+.selection-grow-btn,
+.selection-shrink-btn {
+  padding: 0.18rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+.selection-select-all-btn:hover,
+.selection-grow-btn:hover,
+.selection-shrink-btn:hover { background: var(--bg); color: var(--text); }
+
+/* ── Swatch reorder buttons ─────────────────────────────────────────────── */
+.swatch-reorder-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.swatch-reorder-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.55rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  color: var(--muted);
+  opacity: 0.4;
+  transition: opacity 0.1s;
+}
+.swatch-reorder-btn:hover:not(:disabled) { opacity: 1; }
+.swatch-reorder-btn:disabled { opacity: 0.15; cursor: default; }
+
+/* ── Thread-angle panel (Stage 2) ───────────────────────────────────────── */
+.thread-angle-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.3rem 0;
+}
+.thread-angle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.thread-angle-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.12);
+  flex-shrink: 0;
+}
+.thread-angle-name {
+  font-size: 0.78rem;
+  color: var(--text);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.thread-angle-input {
+  width: 3.8rem;
+  padding: 0.18rem 0.35rem;
+  font-size: 0.78rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: right;
+  flex-shrink: 0;
+}
+.thread-angle-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.thread-snap-tag {
+  font-size: 0.68rem;
+  background: #e8f0fe;
+  color: #2a6dd9;
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+  flex-shrink: 0;
+  white-space: nowrap;
+}

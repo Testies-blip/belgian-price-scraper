@@ -58,6 +58,9 @@
               <div class="selection-actions">
                 <span class="selection-label">Recolor:</span>
                 <div id="selection-color-row" class="selection-color-row"></div>
+                <button id="selection-select-all-btn" class="selection-select-all-btn" title="Select all pixels of this color across the entire image">All color</button>
+                <button id="selection-grow-btn" class="selection-grow-btn" title="Expand selection by 1 pixel outward">Grow +</button>
+                <button id="selection-shrink-btn" class="selection-shrink-btn" title="Contract selection by 1 pixel inward">Shrink &minus;</button>
                 <button id="selection-erase-btn" class="selection-erase-btn">Erase</button>
                 <button id="selection-merge-btn" class="selection-merge-btn" title="Click another region to merge all pixels of that color into this selection&#x27;s color">Merge color &rarr;</button>
               </div>
@@ -94,6 +97,13 @@
           <button class="chip" data-cmd="45 diagonal">45&deg; fill</button>
           <button class="chip" data-cmd="horizontal fill">0&deg; fill</button>
           <button class="chip" data-cmd="smooth edges">Smooth</button>
+          <button class="chip" data-cmd="clean regions">Clean</button>
+          <button class="chip" data-cmd="flip horizontal">Flip H</button>
+          <button class="chip" data-cmd="flip vertical">Flip V</button>
+          <button class="chip" data-cmd="rotate cw">Rotate &#8635;</button>
+          <button class="chip" data-cmd="sharpen image">Sharpen</button>
+          <button class="chip" data-cmd="blur image">Blur</button>
+          <button class="chip" data-cmd="snap threads">Threads</button>
         </div>
         <div class="request-row">
           <input type="text" id="request-input"
@@ -116,6 +126,16 @@
             Colors
             <span class="hint">2&ndash;16</span>
             <input type="number" id="num-colors" value="6" min="2" max="16" step="1">
+          </label>
+          <label>
+            Brightness
+            <span class="hint">50&ndash;150</span>
+            <input type="number" id="brightness-val" value="100" min="50" max="150" step="5">
+          </label>
+          <label>
+            Contrast
+            <span class="hint">50&ndash;150</span>
+            <input type="number" id="contrast-val" value="100" min="50" max="150" step="5">
           </label>
         </div>
       </details>
@@ -196,6 +216,11 @@
         </div>
       </details>
 
+      <details id="thread-panel" class="settings">
+        <summary>Per-thread angles &amp; order</summary>
+        <div id="thread-angle-rows" class="thread-angle-rows"></div>
+      </details>
+
     </div><!-- /stage-2 -->
 
     <div class="status-bar">
@@ -206,10 +231,10 @@
 
   <script src="js/colornames.js?v=7"></script>
   <script src="js/quantize.js?v=7"></script>
-  <script src="js/stitcher.js?v=7"></script>
+  <script src="js/stitcher.js?v=8"></script>
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=17"></script>
+  <script src="js/app.js?v=18"></script>
 </body>
 </html>
