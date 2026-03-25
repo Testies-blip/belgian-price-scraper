@@ -111,8 +111,7 @@ let lockedColors      = new Set(); // palette indices excluded from NLP / requan
 let brightnessAdjust  = 100;    // 50-150; 100 = neutral
 let contrastAdjust    = 100;    // 50-150; 100 = neutral
 let sharpness         = 0;      // -1 = blur, 0 = neutral, +1 = sharpen
-let preBlurPasses     = 0;      // extra blur passes before quantize (depixelate)
-let postSmoothPasses  = 0;      // extra smoothIndexMap passes after quantize (depixelate)
+let depixelateLevel   = 0;      // 0=off 1=light 2=medium 3=heavy — scale-down/up to remove pixel grid
 let flipH             = false;
 let flipV             = false;
 let rotateCW          = 0;      // 0,1,2,3 × 90° clockwise
@@ -242,7 +241,7 @@ function handleFile(file) {
   outlineOnly = false;
   brightnessAdjust = 100; brightnessInput.value = 100;
   contrastAdjust   = 100; contrastInput.value   = 100;
-  sharpness = 0; preBlurPasses = 0; postSmoothPasses = 0;
+  sharpness = 0; depixelateLevel = 0;
   flipH = false; flipV = false; rotateCW = 0;
   colorAngles = {}; threadSnap = null;
   lastSegResult = null;
@@ -551,8 +550,8 @@ function runQuantize(img) {
 
       let { palette, indexMap } = quantizeImage(imageData, k);
 
-      // Smooth out anti-alias noise (1 base pass + extra passes for depixelation)
-      const totalSmooth = 1 + postSmoothPasses;
+      // Smooth out anti-alias noise; depixelate levels get many extra passes
+      const totalSmooth = depixelateLevel > 0 ? depixelateLevel * 4 : 1;
       for (let p = 0; p < totalSmooth; p++) {
         indexMap = smoothIndexMap(indexMap, canvas.width, canvas.height, k);
       }
@@ -710,11 +709,22 @@ function buildWorkingCanvas(img) {
     const out = applyConvolution(id.data, w, h, sharpness > 0 ? SHARPEN_KERNEL : BLUR_KERNEL);
     ctx.putImageData(new ImageData(out, w, h), 0, 0);
   }
-  // Extra blur passes for depixelation (each pass blends neighbouring pixel blocks)
-  for (let p = 0; p < preBlurPasses; p++) {
-    const id  = ctx.getImageData(0, 0, w, h);
-    const out = applyConvolution(id.data, w, h, BLUR_KERNEL);
-    ctx.putImageData(new ImageData(out, w, h), 0, 0);
+  // Depixelate: scale down to stitch-grid resolution then smooth-upscale.
+  // This completely eliminates the pixel-grid pattern regardless of stitch size.
+  if (depixelateLevel > 0) {
+    const blockSize = [0, 4, 6, 8][depixelateLevel];  // px per stitch at each level
+    const sw = Math.max(4, Math.round(w / blockSize));
+    const sh = Math.max(4, Math.round(h / blockSize));
+    const small = document.createElement('canvas');
+    small.width = sw; small.height = sh;
+    const sCtx = small.getContext('2d');
+    sCtx.imageSmoothingEnabled = true;
+    sCtx.imageSmoothingQuality = 'high';
+    sCtx.drawImage(canvas, 0, 0, sw, sh);     // average-down
+    ctx.clearRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(small, 0, 0, w, h);          // smooth-upscale
   }
 
   return { canvas, w, h };
@@ -1422,10 +1432,9 @@ function applyRequest(text) {
   // Blurs raw pixels before quantize (blends blocky pixel-art squares) and adds
   // extra smooth passes after quantize (rounds colour-region boundaries).
   if (/\bdepixelate\b/.test(t)) {
-    const level = preBlurPasses > 0 ? preBlurPasses + 1 : 3;   // cycle up: 0→3→4→5→0
-    preBlurPasses    = level <= 5 ? level : 0;
-    postSmoothPasses = preBlurPasses > 0 ? Math.ceil(preBlurPasses / 1.5) : 0;
-    changes.push(preBlurPasses > 0 ? `depixelate ×${preBlurPasses}` : 'depixelate off');
+    depixelateLevel = (depixelateLevel + 1) % 4;   // cycle: 0→1→2→3→0
+    const lvlNames  = ['off', 'light (4 px grid)', 'medium (6 px grid)', 'heavy (8 px grid)'];
+    changes.push('depixelate ' + lvlNames[depixelateLevel]);
     needsRequantize = true;
   }
 
@@ -1491,7 +1500,7 @@ function applyRequest(text) {
     brightnessInput.value = 100; brightnessAdjust = 100;
     contrastInput.value   = 100; contrastAdjust   = 100;
     sharpness = 0; flipH = false; flipV = false; rotateCW = 0;
-    preBlurPasses = 0; postSmoothPasses = 0;
+    depixelateLevel = 0;
     colorAngles = {}; threadSnap = null;
     skipColors.clear();
     lockedColors.clear();
@@ -2382,7 +2391,7 @@ function captureState() {
     flipH, flipV, rotateCW,
     colorAngles:     { ...colorAngles },
     threadSnap:      threadSnap ? [...threadSnap] : null,
-    preBlurPasses, postSmoothPasses,
+    depixelateLevel,
     quantResult: lastQuantResult ? {
       palette:  lastQuantResult.palette.map(c => [...c]),
       indexMap: new Uint8Array(lastQuantResult.indexMap),  // snapshot copy
@@ -2420,8 +2429,7 @@ function applySnapshot(snap) {
   if (snap.rotateCW !== undefined) rotateCW = snap.rotateCW;
   colorAngles = snap.colorAngles ? { ...snap.colorAngles } : {};
   threadSnap  = snap.threadSnap ? [...snap.threadSnap] : null;
-  if (snap.preBlurPasses  !== undefined) preBlurPasses  = snap.preBlurPasses;
-  if (snap.postSmoothPasses !== undefined) postSmoothPasses = snap.postSmoothPasses;
+  if (snap.depixelateLevel !== undefined) depixelateLevel = snap.depixelateLevel;
   if (snap.quantResult) {
     lastQuantResult = {
       ...snap.quantResult,

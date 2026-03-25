@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Depixelate Demo</title>
+<style>
+  body { font-family: sans-serif; background: #f5f5f0; margin: 0; padding: 1.5rem; color: #333; }
+  h2 { margin: 0 0 .4rem; }
+  .subtitle { color: #666; margin: 0 0 1.2rem; font-size: .9rem; }
+  .drop-zone {
+    border: 2px dashed #aaa; border-radius: 10px; padding: 2rem;
+    text-align: center; color: #888; cursor: pointer; background: #fff;
+    transition: border-color .2s, background .2s;
+    margin-bottom: 1.5rem;
+  }
+  .drop-zone.over { border-color: #4a90d9; background: #eef5ff; color: #4a90d9; }
+  .controls {
+    display: flex; gap: .6rem; align-items: center;
+    flex-wrap: wrap; margin-bottom: 1rem;
+  }
+  label { font-size: .9rem; color: #555; }
+  .level-btn {
+    padding: .35rem .8rem; border-radius: 20px; border: 1px solid #ccc;
+    cursor: pointer; background: #fff; font-size: .85rem; font-weight: 600;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .level-btn.active { background: #b06000; border-color: #b06000; color: #fff; }
+  .level-btn:hover:not(.active) { border-color: #b06000; color: #b06000; }
+  .canvases { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .panel { flex: 1; min-width: 200px; }
+  .panel h3 { margin: 0 0 .4rem; font-size: .9rem; color: #444; text-transform: uppercase; letter-spacing: .04em; }
+  canvas { max-width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: block; }
+  #status { color: #888; font-size: .85rem; margin-top: .6rem; }
+</style>
+</head>
+<body>
+<h2>Depixelate Demo</h2>
+<p class="subtitle">Drop a pixelated image to preview the blur + smooth depixelation effect.</p>
+
+<div id="drop-zone" class="drop-zone">
+  <strong>Drop image here</strong><br>
+  <span style="font-size:.85rem">or click to browse</span>
+  <input type="file" id="file-input" accept="image/*" style="display:none">
+</div>
+
+<div class="controls" id="controls" style="display:none">
+  <label>Depixelate level:</label>
+  <button class="level-btn active" data-level="0">Off</button>
+  <button class="level-btn" data-level="1">Light (4 px)</button>
+  <button class="level-btn" data-level="2">Medium (6 px)</button>
+  <button class="level-btn" data-level="3">Heavy (8 px)</button>
+</div>
+
+<div class="canvases">
+  <div class="panel">
+    <h3>Original</h3>
+    <canvas id="original-canvas"></canvas>
+  </div>
+  <div class="panel" id="result-panel" style="display:none">
+    <h3 id="result-label">Depixelated</h3>
+    <canvas id="result-canvas"></canvas>
+  </div>
+</div>
+<div id="status"></div>
+
+<script>
+// ── Kernels ────────────────────────────────────────────────────────────────
+const BLUR_KERNEL = [
+  1/16, 2/16, 1/16,
+  2/16, 4/16, 2/16,
+  1/16, 2/16, 1/16
+];
+
+function applyConvolution(srcData, w, h, kernel) {
+  const out = new Uint8ClampedArray(srcData.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 0, g = 0, b = 0, ki = 0;
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          const nx = Math.max(0, Math.min(w - 1, x + kx));
+          const ny = Math.max(0, Math.min(h - 1, y + ky));
+          const si = (ny * w + nx) * 4;
+          const kv = kernel[ki++];
+          r += srcData[si]   * kv;
+          g += srcData[si+1] * kv;
+          b += srcData[si+2] * kv;
+        }
+      }
+      const di = (y * w + x) * 4;
+      out[di]   = r; out[di+1] = g; out[di+2] = b;
+      out[di+3] = srcData[di+3];
+    }
+  }
+  return out;
+}
+
+// Simple k-means quantize (reduced palette)
+function quantize(imageData, k) {
+  const { data, width: w, height: h } = imageData;
+  // Sample pixels
+  const pixels = [];
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i+3] > 128) pixels.push([data[i], data[i+1], data[i+2]]);
+  }
+  // Init centroids by spread sampling
+  const step = Math.floor(pixels.length / k);
+  let centroids = Array.from({length: k}, (_, i) => [...pixels[i * step]]);
+
+  for (let iter = 0; iter < 10; iter++) {
+    const sums = centroids.map(() => [0,0,0,0]);
+    for (const px of pixels) {
+      let best = 0, bestD = Infinity;
+      for (let ci = 0; ci < k; ci++) {
+        const d = (px[0]-centroids[ci][0])**2 + (px[1]-centroids[ci][1])**2 + (px[2]-centroids[ci][2])**2;
+        if (d < bestD) { bestD = d; best = ci; }
+      }
+      sums[best][0] += px[0]; sums[best][1] += px[1]; sums[best][2] += px[2]; sums[best][3]++;
+    }
+    centroids = sums.map((s, ci) => s[3] > 0 ? [s[0]/s[3], s[1]/s[3], s[2]/s[3]] : centroids[ci]);
+  }
+  return centroids;
+}
+
+function buildIndexMap(data, w, h, palette) {
+  const indexMap = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const r = data[i*4], g = data[i*4+1], b = data[i*4+2];
+    let best = 0, bestD = Infinity;
+    for (let ci = 0; ci < palette.length; ci++) {
+      const d = (r-palette[ci][0])**2 + (g-palette[ci][1])**2 + (b-palette[ci][2])**2;
+      if (d < bestD) { bestD = d; best = ci; }
+    }
+    indexMap[i] = best;
+  }
+  return indexMap;
+}
+
+function smoothIndexMap(indexMap, w, h, k) {
+  const out = new Uint8Array(indexMap.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const counts = new Uint16Array(k);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = Math.max(0, Math.min(w-1, x+dx));
+          const ny = Math.max(0, Math.min(h-1, y+dy));
+          counts[indexMap[ny*w+nx]]++;
+        }
+      }
+      let best = 0;
+      for (let ci = 1; ci < k; ci++) if (counts[ci] > counts[best]) best = ci;
+      out[y*w+x] = best;
+    }
+  }
+  return out;
+}
+
+function renderIndexMap(palette, indexMap, w, h) {
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const c = palette[indexMap[i]];
+    out[i*4] = c[0]; out[i*4+1] = c[1]; out[i*4+2] = c[2]; out[i*4+3] = 255;
+  }
+  return new ImageData(out, w, h);
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let originalImageData = null;
+const NUM_COLORS = 8;
+
+const BLOCK_SIZES   = [0, 4, 6, 8];   // px per stitch at each level
+const LEVEL_NAMES   = ['Off (quantize only)', 'Light (4 px grid)', 'Medium (6 px grid)', 'Heavy (8 px grid)'];
+
+function processLevel(level) {
+  if (!originalImageData) return;
+  const { data, width: w, height: h } = originalImageData;
+
+  const status = document.getElementById('status');
+  status.textContent = level === 0 ? 'Quantizing…' : `Depixelating at level ${level} (${BLOCK_SIZES[level]} px blocks)…`;
+
+  setTimeout(() => {
+    // Scale-down / scale-up to eliminate pixel grid
+    let processedData;
+    if (level > 0) {
+      const blockSize = BLOCK_SIZES[level];
+      const sw = Math.max(4, Math.round(w / blockSize));
+      const sh = Math.max(4, Math.round(h / blockSize));
+      // Draw original into a small offscreen canvas (browser averages pixels)
+      const small = document.createElement('canvas');
+      small.width = sw; small.height = sh;
+      const sCtx = small.getContext('2d');
+      sCtx.imageSmoothingEnabled = true;
+      sCtx.imageSmoothingQuality = 'high';
+      const origCanvas = document.createElement('canvas');
+      origCanvas.width = w; origCanvas.height = h;
+      origCanvas.getContext('2d').putImageData(originalImageData, 0, 0);
+      sCtx.drawImage(origCanvas, 0, 0, sw, sh);
+      // Scale back up smoothly
+      const big = document.createElement('canvas');
+      big.width = w; big.height = h;
+      const bCtx = big.getContext('2d');
+      bCtx.imageSmoothingEnabled = true;
+      bCtx.imageSmoothingQuality = 'high';
+      bCtx.drawImage(small, 0, 0, w, h);
+      processedData = bCtx.getImageData(0, 0, w, h).data;
+    } else {
+      processedData = data;
+    }
+
+    // Quantize
+    const procID = new ImageData(new Uint8ClampedArray(processedData), w, h);
+    const palette = quantize(procID, NUM_COLORS);
+    let indexMap = buildIndexMap(processedData, w, h, palette);
+
+    // Smooth passes
+    const smoothPasses = level > 0 ? level * 4 : 1;
+    for (let p = 0; p < smoothPasses; p++) {
+      indexMap = smoothIndexMap(indexMap, w, h, NUM_COLORS);
+    }
+
+    const resultID = renderIndexMap(palette, indexMap, w, h);
+    const canvas = document.getElementById('result-canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').putImageData(resultID, 0, 0);
+
+    document.getElementById('result-panel').style.display = '';
+    document.getElementById('result-label').textContent = LEVEL_NAMES[level];
+    status.textContent = `Done — ${NUM_COLORS} colors, ${smoothPasses} smooth pass${smoothPasses > 1 ? 'es' : ''}`;
+  }, 10);
+}
+
+// ── Image loading ──────────────────────────────────────────────────────────
+function loadImage(file) {
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    const oc = document.getElementById('original-canvas');
+    oc.width = img.width; oc.height = img.height;
+    const ctx = oc.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    originalImageData = ctx.getImageData(0, 0, img.width, img.height);
+    document.getElementById('controls').style.display = 'flex';
+    URL.revokeObjectURL(url);
+    // Auto-run at current level
+    const active = document.querySelector('.level-btn.active');
+    processLevel(+active.dataset.level);
+  };
+  img.src = url;
+}
+
+// ── Events ─────────────────────────────────────────────────────────────────
+const dz = document.getElementById('drop-zone');
+const fi = document.getElementById('file-input');
+
+dz.addEventListener('click', () => fi.click());
+fi.addEventListener('change', e => { if (e.target.files[0]) loadImage(e.target.files[0]); });
+
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('over');
+  if (e.dataTransfer.files[0]) loadImage(e.dataTransfer.files[0]);
+});
+
+document.querySelectorAll('.level-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.level-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    processLevel(+btn.dataset.level);
+  });
+});
+</script>
+</body>
+</html>
