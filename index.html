@@ -163,6 +163,7 @@
           <button id="copy-neighbor-btn" class="erase-btn" disabled title="Drag to fill an area with the color surrounding it">&#9632; Fill Neighbor</button>
           <button id="solo-btn" class="erase-btn" disabled title="Browse stitching layers one at a time (Esc to exit)">&#8801; Layers</button>
           <button id="draw-btn" class="erase-btn" disabled title="Paint or erase pixels (right-click&#x202F;=&#x202F;erase, Esc to exit)">&#9998; Draw</button>
+          <button id="move-stitch-btn" class="erase-btn" disabled title="Click a stitch dot and drag to reposition it">&#10021; Move</button>
           <div class="zoom-controls">
             <button id="zoom-out-btn" class="zoom-btn" disabled title="Zoom out (Ctrl+scroll)">&#8722;</button>
             <span id="zoom-label" class="zoom-label">100%</span>
@@ -214,11 +215,16 @@
             <span class="hint">deg (0 = horiz, 45 = diag)</span>
             <input type="number" id="fill-angle" value="45" min="0" max="89" step="15">
           </label>
+          <label>
+            Image overlay
+            <span class="hint">0&ndash;50 %</span>
+            <input type="range" id="watermark-opacity" value="0" min="0" max="50" step="5" style="width:80px;vertical-align:middle">
+          </label>
         </div>
       </details>
 
       <details id="thread-panel" class="settings">
-        <summary>Per-thread angles &amp; order</summary>
+        <summary>Per-thread angles, fill type &amp; order</summary>
         <div id="thread-angle-rows" class="thread-angle-rows"></div>
       </details>
 
@@ -232,10 +238,10 @@
 
   <script src="js/colornames.js?v=7"></script>
   <script src="js/quantize.js?v=7"></script>
-  <script src="js/stitcher.js?v=8"></script>
+  <script src="js/stitcher.js?v=9"></script>
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=20"></script>
+  <script src="js/app.js?v=21"></script>
 </body>
 </html>

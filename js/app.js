@@ -68,6 +68,8 @@ const stitchInfoEl           = document.getElementById('stitch-info');
 const brightnessInput        = document.getElementById('brightness-val');
 const contrastInput          = document.getElementById('contrast-val');
 const threadAngleRows        = document.getElementById('thread-angle-rows');
+const moveStitchBtn          = document.getElementById('move-stitch-btn');
+const watermarkRange         = document.getElementById('watermark-opacity');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
 // Built from BODY_ALIASES defined in bodyparts.js (loaded before app.js).
@@ -117,8 +119,17 @@ let flipV             = false;
 let rotateCW          = 0;      // 0,1,2,3 × 90° clockwise
 // Per-color stitch angle (Stage 2); keys are palette indices, values are degrees
 let colorAngles       = {};
+let colorFillTypes    = {};     // paletteIndex → 'satin'|'cross'|'outline' per-color fill type
 // Thread catalog snapping
 let threadSnap        = null;   // null or array of {code,name,r,g,b} — snapped threads
+// Stitch preview overlays
+let watermarkOpacity  = 0;      // 0–50 — opacity % of original image drawn under stitches
+let lastWorkingCanvas = null;   // canvas after buildWorkingCanvas (for watermark alignment)
+// Stitch records cache (enables move-stitch tool)
+let lastStitchRecords = null;
+let lastColorOrder    = null;
+let moveMode          = false;
+let _moveDrag         = null;   // { stitchIdx } while dragging
 let drawMode          = false;    // true while draw/paint tool is active
 let drawPaintColor    = 0;        // palette index to paint (255 = erase)
 let drawBrushSize     = 1;        // brush square side: 1, 3 or 5 px
@@ -166,13 +177,19 @@ function renderThreadPanel() {
     row.className = 'thread-angle-row';
     const angle = colorAngles[i] !== undefined ? colorAngles[i] : '';
     const snap  = threadSnap ? threadSnap[i] : null;
+    const ft = colorFillTypes[i] || 'satin';
     row.innerHTML = `
       <span class="thread-angle-swatch" style="background:rgb(${r},${g},${b})"></span>
       <span class="thread-angle-name">${snap ? `${snap.code} ${snap.name}` : (colorNames[i] || `Color ${i + 1}`)}</span>
       <input type="number" class="thread-angle-input" value="${angle}"
              min="0" max="89" step="15" placeholder="—"
              data-angle-idx="${i}" title="Fill angle for this thread (leave blank to use global)">
-      <span class="thread-angle-label">°</span>`;
+      <span class="thread-angle-label">°</span>
+      <div class="thread-fill-btns">
+        <button class="thread-fill-btn${ft==='satin'?' active':''}" data-fill-idx="${i}" data-fill-type="satin" title="Satin fill (parallel rows)">&#8801;</button>
+        <button class="thread-fill-btn${ft==='cross'?' active':''}" data-fill-idx="${i}" data-fill-type="cross" title="Cross-hatch fill (two directions)">&#8862;</button>
+        <button class="thread-fill-btn${ft==='outline'?' active':''}" data-fill-idx="${i}" data-fill-type="outline" title="Outline only">&#9633;</button>
+      </div>`;
     threadAngleRows.appendChild(row);
   });
 }
@@ -188,6 +205,7 @@ function enterStage2() {
   copyNeighborBtn.disabled = !lastQuantResult;
   soloBtn.disabled         = !lastQuantResult;
   drawBtn.disabled         = !lastQuantResult;
+  moveStitchBtn.disabled   = !lastQuantResult;
   applyZoom();
 }
 
@@ -243,7 +261,9 @@ function handleFile(file) {
   contrastAdjust   = 100; contrastInput.value   = 100;
   sharpness = 0; depixelateLevel = 0;
   flipH = false; flipV = false; rotateCW = 0;
-  colorAngles = {}; threadSnap = null;
+  colorAngles = {}; colorFillTypes = {}; threadSnap = null;
+  watermarkOpacity = 0; if (watermarkRange) watermarkRange.value = 0;
+  lastStitchRecords = null; lastColorOrder = null;
   lastSegResult = null;
   segStatus.classList.add('hidden');
   eraseAreaMode    = false;
@@ -727,6 +747,7 @@ function buildWorkingCanvas(img) {
     ctx.drawImage(small, 0, 0, w, h);          // smooth-upscale
   }
 
+  lastWorkingCanvas = canvas;
   return { canvas, w, h };
 }
 
@@ -990,6 +1011,10 @@ function swapPaletteColors(i, j) {
   const ai = colorAngles[i], aj = colorAngles[j];
   if (ai !== undefined) colorAngles[j] = ai; else delete colorAngles[j];
   if (aj !== undefined) colorAngles[i] = aj; else delete colorAngles[i];
+
+  const fi = colorFillTypes[i], fj = colorFillTypes[j];
+  if (fi !== undefined) colorFillTypes[j] = fi; else delete colorFillTypes[j];
+  if (fj !== undefined) colorFillTypes[i] = fj; else delete colorFillTypes[i];
 
   if (threadSnap) [threadSnap[i], threadSnap[j]] = [threadSnap[j], threadSnap[i]];
 
@@ -1501,7 +1526,7 @@ function applyRequest(text) {
     contrastInput.value   = 100; contrastAdjust   = 100;
     sharpness = 0; flipH = false; flipV = false; rotateCW = 0;
     depixelateLevel = 0;
-    colorAngles = {}; threadSnap = null;
+    colorAngles = {}; colorFillTypes = {}; threadSnap = null;
     skipColors.clear();
     lockedColors.clear();
     outlineOnly        = false;
@@ -1560,8 +1585,9 @@ function updateStitchPreview() {
   const fillAngleDeg = clampInt(Number(angleInput.value), 0, 89);
   const records = generateStitches(
     indexMap, width, height, palette,
-    { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg, colorAngles }
+    { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg, colorAngles, colorFillTypes }
   );
+  lastStitchRecords = records;
 
   // Rebuild the same color order as stitcher.js (sorted by pixel count desc)
   const k = palette.length;
@@ -1572,6 +1598,7 @@ function updateStitchPreview() {
   const colorOrder = Array.from({ length: k }, (_, i) => i)
     .filter(i => counts[i] > 0 && !skipColors.has(i))
     .sort((a, b) => counts[b] - counts[a]);
+  lastColorOrder = colorOrder;
 
   renderStitchPreview(records, palette, colorOrder, width, height, soloLayer);
   if (soloLayer !== null) updateLayerNav();
@@ -1608,6 +1635,14 @@ function renderStitchPreview(records, palette, colorOrder, w, h, soloColorIdx = 
   // Fabric-coloured background
   ctx.fillStyle = '#faf8f5';
   ctx.fillRect(0, 0, w, h);
+
+  // Optional: original-image watermark for alignment reference
+  if (watermarkOpacity > 0 && lastWorkingCanvas) {
+    ctx.save();
+    ctx.globalAlpha = watermarkOpacity / 100;
+    ctx.drawImage(lastWorkingCanvas, 0, 0, w, h);
+    ctx.restore();
+  }
 
   // Subtle 10 mm grid (50 px at 5 px/mm)
   const GRID = 50;
@@ -2390,8 +2425,10 @@ function captureState() {
     sharpness,
     flipH, flipV, rotateCW,
     colorAngles:     { ...colorAngles },
+    colorFillTypes:  { ...colorFillTypes },
     threadSnap:      threadSnap ? [...threadSnap] : null,
     depixelateLevel,
+    watermarkOpacity,
     quantResult: lastQuantResult ? {
       palette:  lastQuantResult.palette.map(c => [...c]),
       indexMap: new Uint8Array(lastQuantResult.indexMap),  // snapshot copy
@@ -2427,9 +2464,14 @@ function applySnapshot(snap) {
   if (snap.flipH !== undefined) flipH = snap.flipH;
   if (snap.flipV !== undefined) flipV = snap.flipV;
   if (snap.rotateCW !== undefined) rotateCW = snap.rotateCW;
-  colorAngles = snap.colorAngles ? { ...snap.colorAngles } : {};
-  threadSnap  = snap.threadSnap ? [...snap.threadSnap] : null;
-  if (snap.depixelateLevel !== undefined) depixelateLevel = snap.depixelateLevel;
+  colorAngles    = snap.colorAngles    ? { ...snap.colorAngles }    : {};
+  colorFillTypes = snap.colorFillTypes ? { ...snap.colorFillTypes } : {};
+  threadSnap     = snap.threadSnap ? [...snap.threadSnap] : null;
+  if (snap.depixelateLevel  !== undefined) depixelateLevel = snap.depixelateLevel;
+  if (snap.watermarkOpacity !== undefined) {
+    watermarkOpacity = snap.watermarkOpacity;
+    if (watermarkRange) watermarkRange.value = watermarkOpacity;
+  }
   if (snap.quantResult) {
     lastQuantResult = {
       ...snap.quantResult,
@@ -2623,3 +2665,83 @@ threadAngleRows.addEventListener('input', e => {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => updateStitchPreview(), 400);
 });
+
+// Fill-type buttons in Stage 2 thread panel
+threadAngleRows.addEventListener('click', e => {
+  const btn = e.target.closest('[data-fill-type]');
+  if (!btn) return;
+  const ci = parseInt(btn.dataset.fillIdx, 10);
+  const ft = btn.dataset.fillType;
+  if (ft === 'satin') delete colorFillTypes[ci]; else colorFillTypes[ci] = ft;
+  // Update active state on sibling buttons
+  btn.closest('.thread-fill-btns').querySelectorAll('.thread-fill-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.fillType === (colorFillTypes[ci] || 'satin'));
+  });
+  pushUndo();
+  updateStitchPreview();
+});
+
+// Watermark opacity slider
+watermarkRange.addEventListener('input', () => {
+  watermarkOpacity = Number(watermarkRange.value);
+  if (lastStitchRecords && lastColorOrder && lastQuantResult) {
+    const { palette, width, height } = lastQuantResult;
+    renderStitchPreview(lastStitchRecords, palette, lastColorOrder, width, height, soloLayer);
+  }
+});
+
+// ── Move-stitch tool ──────────────────────────────────────────────────────────
+
+moveStitchBtn.addEventListener('click', () => {
+  moveMode = !moveMode;
+  moveStitchBtn.classList.toggle('active', moveMode);
+  if (moveMode) {
+    // Exit other exclusive tools
+    if (eraseAreaMode)    eraseBtn.click();
+    if (copyNeighborMode) copyNeighborBtn.click();
+    if (drawMode)         drawBtn.click();
+    stitchCanvas.style.cursor = 'crosshair';
+  } else {
+    stitchCanvas.style.cursor = '';
+    _moveDrag = null;
+  }
+});
+
+stitchCanvas.addEventListener('mousedown', e => {
+  if (!moveMode || !lastStitchRecords || !lastQuantResult) return;
+  const rect   = stitchCanvas.getBoundingClientRect();
+  const scaleX = stitchCanvas.width  / rect.width;
+  const scaleY = stitchCanvas.height / rect.height;
+  const cx     = (e.clientX - rect.left)  * scaleX;
+  const cy     = (e.clientY - rect.top)   * scaleY;
+  const h      = stitchCanvas.height;
+
+  let bestIdx = -1, bestDist = 12 * Math.max(scaleX, scaleY);
+  for (let i = 0; i < lastStitchRecords.length; i++) {
+    const r = lastStitchRecords[i];
+    if (r.type !== 'STITCH') continue;
+    const d = Math.hypot(r.x / 2 - cx, h - 1 - r.y / 2 - cy);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  }
+  if (bestIdx >= 0) { _moveDrag = { idx: bestIdx }; e.preventDefault(); }
+}, { passive: false });
+
+stitchCanvas.addEventListener('mousemove', e => {
+  if (!_moveDrag || !lastStitchRecords || !lastQuantResult) return;
+  const rect   = stitchCanvas.getBoundingClientRect();
+  const scaleX = stitchCanvas.width  / rect.width;
+  const scaleY = stitchCanvas.height / rect.height;
+  const cx     = (e.clientX - rect.left)  * scaleX;
+  const cy     = (e.clientY - rect.top)   * scaleY;
+  const h      = stitchCanvas.height;
+
+  const rec = lastStitchRecords[_moveDrag.idx];
+  rec.x = Math.max(0, Math.round(cx * 2));
+  rec.y = Math.max(0, Math.round((h - 1 - cy) * 2));
+
+  const { palette, width, height } = lastQuantResult;
+  renderStitchPreview(lastStitchRecords, palette, lastColorOrder, width, height, soloLayer);
+});
+
+stitchCanvas.addEventListener('mouseup', () => { _moveDrag = null; });
+stitchCanvas.addEventListener('mouseleave', () => { _moveDrag = null; });

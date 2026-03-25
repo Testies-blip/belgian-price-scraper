@@ -969,6 +969,24 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   color: var(--muted);
   flex-shrink: 0;
 }
+.thread-fill-btns {
+  display: flex;
+  gap: 0.15rem;
+  flex-shrink: 0;
+}
+.thread-fill-btn {
+  padding: 0.15rem 0.38rem;
+  font-size: 0.88rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1.2;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.thread-fill-btn:hover { background: var(--bg); color: var(--text); }
+.thread-fill-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .thread-snap-tag {
   font-size: 0.68rem;
   background: #e8f0fe;

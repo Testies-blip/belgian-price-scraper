@@ -22,27 +22,27 @@ const END          = 'END';
  * @param {number}      height
  * @param {number[][]}  palette      [r,g,b] entries
  * @param {object}      opts
- * @param {number}      opts.pitchPx        row pitch in pixels
- * @param {number}      opts.stitchLenPx    stitch length in pixels
- * @param {Set<number>} [opts.skipColors]   color indices to exclude
- * @param {boolean}     [opts.outlineOnly]  stitch boundary pixels only
- * @param {number}      [opts.minRegionPx]  drop components smaller than this
- * @param {number}      [opts.fillAngleDeg] fill angle in degrees (0=horiz, 45=diag)
+ * @param {number}      opts.pitchPx          row pitch in pixels
+ * @param {number}      opts.stitchLenPx      stitch length in pixels
+ * @param {Set<number>} [opts.skipColors]     color indices to exclude
+ * @param {boolean}     [opts.outlineOnly]    stitch boundary pixels only (global)
+ * @param {number}      [opts.minRegionPx]    drop components smaller than this
+ * @param {number}      [opts.fillAngleDeg]   fill angle in degrees (0=horiz, 45=diag)
+ * @param {object}      [opts.colorAngles]    { paletteIndex: angleDeg } per-color overrides
+ * @param {object}      [opts.colorFillTypes] { paletteIndex: 'satin'|'cross'|'outline' }
  */
 function generateStitches(indexMap, width, height, palette, opts) {
   const {
     pitchPx,
     stitchLenPx,
-    skipColors   = new Set(),
-    outlineOnly  = false,
-    minRegionPx  = 40,
-    fillAngleDeg = 45,
-    colorAngles  = {},   // { paletteIndex: angleDeg } — per-color fill angle overrides
+    skipColors     = new Set(),
+    outlineOnly    = false,
+    minRegionPx    = 40,
+    fillAngleDeg   = 45,
+    colorAngles    = {},
+    colorFillTypes = {},
   } = opts;
   const k = palette.length;
-
-  // In outline mode use a finer pitch so the contour is continuous
-  const effectivePitch = outlineOnly ? Math.max(1, Math.floor(pitchPx / 2)) : pitchPx;
 
   // Sort colors largest-first so the machine starts with big regions
   const counts = new Int32Array(k);
@@ -59,9 +59,11 @@ function generateStitches(indexMap, width, height, palette, opts) {
   for (const colorIdx of colorOrder) {
     if (counts[colorIdx] === 0 || skipColors.has(colorIdx)) continue;
 
-    // Per-color fill angle: use colorAngles override if present, else global fillAngleDeg
-    const angleDeg = (colorAngles[colorIdx] !== undefined) ? colorAngles[colorIdx] : fillAngleDeg;
-    const isDiag   = (angleDeg % 180) !== 0;
+    // Per-color fill angle and fill type
+    const angleDeg  = (colorAngles[colorIdx] !== undefined) ? colorAngles[colorIdx] : fillAngleDeg;
+    const fillType  = colorFillTypes[colorIdx] || 'satin';   // 'satin' | 'cross' | 'outline'
+    const isOutline = outlineOnly || fillType === 'outline';
+    const ePitch    = isOutline ? Math.max(1, Math.floor(pitchPx / 2)) : pitchPx;
 
     // Decompose into 4-connected components; discard tiny islands
     const components = findConnectedComponents(indexMap, width, height, colorIdx)
@@ -73,108 +75,98 @@ function generateStitches(indexMap, width, height, palette, opts) {
     if (!firstColor) records.push({ x: curX, y: curY, type: COLOR_CHANGE });
     firstColor = false;
 
-    // #3 — order components by proximity to minimise jump travel
+    // Order components by proximity to minimise jump travel
     const ordered = orderByProximity(components, curX, curY, height);
 
     for (const { mask, minRow, maxRow } of ordered) {
-      const scanMask = outlineOnly ? buildEdgeMaskFromBinary(mask, width, height) : mask;
+      const scanMask = isOutline ? buildEdgeMaskFromBinary(mask, width, height) : mask;
+      const state    = { pass: 0, first: true, curX, curY };
 
-      let pass = 0;
-      let firstStitchOfComponent = true;
+      // Primary fill pass
+      emitFillAtAngle(records, scanMask, width, height, minRow, maxRow,
+                      angleDeg, ePitch, stitchLenPx, isOutline, state);
 
-      if (isDiag) {
-        // ── 45° anti-diagonal fill (#1) ──────────────────────────────────────
-        // Anti-diagonals are defined by d = row - col.
-        // Adjacent anti-diagonals are √2 px apart, so step d by pitch * √2.
-        const diagStep = Math.max(1, Math.round(effectivePitch * Math.SQRT2));
-        const dMin = minRow - (width - 1);
-        const dMax = maxRow;
-
-        for (let d = dMin; d <= dMax; d += diagStep) {
-          const runs = collectRunsAlongAntiDiag(scanMask, width, height, d);
-          if (runs.length === 0) continue;
-
-          if (pass % 2 === 1) runs.reverse();
-
-          for (const run of runs) {
-            const [xS, xE] = pass % 2 === 0 ? run : [run[1], run[0]];
-
-            const pts = outlineOnly
-              ? (xS === xE
-                  ? [{ x: xS, y: xS + d }]
-                  : [{ x: xS, y: xS + d }, { x: xE, y: xE + d }])
-              : stitchesAlongAntiDiag(xS, xE, d, stitchLenPx);
-
-            for (const { x, y } of pts) {
-              const dstX = pxToDst(x);
-              const dstY = rowToDst(y, height);
-
-              if (firstStitchOfComponent) {
-                emitMove(records, curX, curY, dstX, dstY, JUMP);
-                curX = dstX; curY = dstY;
-                firstStitchOfComponent = false;
-                emitStartLock(records, curX, curY); // #2 — lock stitches
-              } else {
-                const distX = Math.abs(dstX - curX);
-                const distY = Math.abs(dstY - curY);
-                if (distX > 120 || distY > 120) {
-                  emitMove(records, curX, curY, dstX, dstY, JUMP);
-                } else {
-                  records.push({ x: dstX, y: dstY, type: STITCH });
-                }
-                curX = dstX; curY = dstY;
-              }
-            }
-          }
-          pass++;
-        }
-
-      } else {
-        // ── Horizontal fill (angle = 0°) ──────────────────────────────────────
-        for (let row = minRow; row <= maxRow; row += effectivePitch) {
-          const runs = collectRunsFromBinary(scanMask, width, row);
-          if (runs.length === 0) continue;
-
-          if (pass % 2 === 1) runs.reverse();
-
-          for (const run of runs) {
-            const [xStart, xEnd] = pass % 2 === 0
-              ? [run[0], run[1]]
-              : [run[1], run[0]];
-
-            const pts = outlineOnly
-              ? outlinePointsAlongRun(xStart, xEnd)
-              : stitchesAlongRun(xStart, xEnd, stitchLenPx);
-
-            for (const px of pts) {
-              const dx = pxToDst(px);
-              const dy = rowToDst(row, height);
-
-              if (firstStitchOfComponent) {
-                emitMove(records, curX, curY, dx, dy, JUMP);
-                curX = dx; curY = dy;
-                firstStitchOfComponent = false;
-                emitStartLock(records, curX, curY); // #2 — lock stitches
-              } else {
-                const distX = Math.abs(dx - curX);
-                const distY = Math.abs(dy - curY);
-                if (distX > 120 || distY > 120) {
-                  emitMove(records, curX, curY, dx, dy, JUMP);
-                } else {
-                  records.push({ x: dx, y: dy, type: STITCH });
-                }
-                curX = dx; curY = dy;
-              }
-            }
-          }
-          pass++;
-        }
+      // Cross-hatch: second pass at the perpendicular angle
+      if (fillType === 'cross') {
+        const perpAngle = (angleDeg % 180 !== 0) ? 0 : 45;  // diag→horiz, horiz→diag
+        state.pass = 0;  // reset alternating direction for the second direction
+        emitFillAtAngle(records, scanMask, width, height, minRow, maxRow,
+                        perpAngle, ePitch, stitchLenPx, isOutline, state);
       }
+
+      curX = state.curX;
+      curY = state.curY;
     }
   }
 
   records.push({ x: curX, y: curY, type: END });
   return records;
+}
+
+/**
+ * Emit stitches for one fill direction into records, updating state in-place.
+ * state = { pass, first, curX, curY }
+ */
+function emitFillAtAngle(records, scanMask, width, height, minRow, maxRow,
+                         angleDeg, pitchPx, stitchLenPx, outlineOnly, state) {
+  const isDiag = (angleDeg % 180) !== 0;
+
+  function emitPt(dstX, dstY) {
+    if (state.first) {
+      emitMove(records, state.curX, state.curY, dstX, dstY, JUMP);
+      state.curX = dstX; state.curY = dstY;
+      state.first = false;
+      emitStartLock(records, state.curX, state.curY);
+    } else {
+      if (Math.abs(dstX - state.curX) > 120 || Math.abs(dstY - state.curY) > 120) {
+        emitMove(records, state.curX, state.curY, dstX, dstY, JUMP);
+      } else {
+        records.push({ x: dstX, y: dstY, type: STITCH });
+      }
+      state.curX = dstX; state.curY = dstY;
+    }
+  }
+
+  if (isDiag) {
+    // ── 45° anti-diagonal fill ────────────────────────────────────────────────
+    const diagStep = Math.max(1, Math.round(pitchPx * Math.SQRT2));
+    const dMin = minRow - (width - 1);
+    const dMax = maxRow;
+
+    for (let d = dMin; d <= dMax; d += diagStep) {
+      const runs = collectRunsAlongAntiDiag(scanMask, width, height, d);
+      if (runs.length === 0) continue;
+      if (state.pass % 2 === 1) runs.reverse();
+
+      for (const run of runs) {
+        const [xS, xE] = state.pass % 2 === 0 ? run : [run[1], run[0]];
+        const pts = outlineOnly
+          ? (xS === xE
+              ? [{ x: xS, y: xS + d }]
+              : [{ x: xS, y: xS + d }, { x: xE, y: xE + d }])
+          : stitchesAlongAntiDiag(xS, xE, d, stitchLenPx);
+        for (const { x, y } of pts) emitPt(pxToDst(x), rowToDst(y, height));
+      }
+      state.pass++;
+    }
+
+  } else {
+    // ── Horizontal fill (angle = 0°) ──────────────────────────────────────────
+    for (let row = minRow; row <= maxRow; row += pitchPx) {
+      const runs = collectRunsFromBinary(scanMask, width, row);
+      if (runs.length === 0) continue;
+      if (state.pass % 2 === 1) runs.reverse();
+
+      for (const run of runs) {
+        const [xStart, xEnd] = state.pass % 2 === 0 ? [run[0], run[1]] : [run[1], run[0]];
+        const pts = outlineOnly
+          ? outlinePointsAlongRun(xStart, xEnd)
+          : stitchesAlongRun(xStart, xEnd, stitchLenPx);
+        for (const px of pts) emitPt(pxToDst(px), rowToDst(row, height));
+      }
+      state.pass++;
+    }
+  }
 }
 
 // ── Connected components ───────────────────────────────────────────────────────
