@@ -2146,6 +2146,12 @@ document.addEventListener('mouseup', e => {
     _lassoDrag = null;
     if (pts.length >= 3) {
       _lassoSelection = pts;
+      // Deactivate lasso mode so the overlay no longer intercepts mouse events
+      // while the user moves to click Delete / recolor in the action bar.
+      lassoMode = false;
+      lassoBtn.classList.remove('active');
+      eraseOverlay.classList.remove('active');
+      eraseOverlay.style.cursor = '';
       drawLassoPath(pts);          // keep the outline visible
       showLassoActionBar();
     } else {
