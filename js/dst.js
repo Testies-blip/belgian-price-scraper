@@ -12,11 +12,58 @@
 'use strict';
 
 /**
+ * Collapse consecutive JUMP runs so that cut-thread areas don't leave hundreds
+ * of tiny jump-steps visible in DST viewers.  Each run of N consecutive JUMPs
+ * is replaced by the minimum number of max-121-unit hops needed to reach the
+ * run's final position directly.
+ *
+ * @param {Array} records  in-place modification is NOT done; returns a new array
+ */
+function compactJumps(records) {
+  const out = [];
+  let i = 0;
+  while (i < records.length) {
+    const r = records[i];
+    if (r.type !== 'JUMP') {
+      out.push(r);
+      i++;
+      continue;
+    }
+    // Collect the whole consecutive JUMP run
+    let j = i;
+    while (j < records.length && records[j].type === 'JUMP') j++;
+    // records[j-1] is the last JUMP in the run — its position is the destination
+    const dest = records[j - 1];
+    // Origin: position of the last non-JUMP record before this run
+    const origin = out.length > 0
+      ? out[out.length - 1]
+      : { x: 0, y: 0 };
+    // Emit one or more ≤121-unit JUMP hops to reach dest
+    const DST_MAX = 121;
+    let cx = origin.x, cy = origin.y;
+    const tx = dest.x, ty = dest.y;
+    while (cx !== tx || cy !== ty) {
+      const sx = Math.sign(tx - cx);
+      const sy = Math.sign(ty - cy);
+      const stepX = Math.min(Math.abs(tx - cx), DST_MAX) * sx;
+      const stepY = Math.min(Math.abs(ty - cy), DST_MAX) * sy;
+      cx += stepX;
+      cy += stepY;
+      out.push({ x: cx, y: cy, type: 'JUMP' });
+    }
+    i = j;
+  }
+  return out;
+}
+
+/**
  * @param {Array<{x:number,y:number,type:string}>} records  output of generateStitches()
  * @param {string} designName  up to 16 chars
  * @returns {Uint8Array}
  */
 function encodeDST(records, designName) {
+  // Collapse consecutive JUMP runs introduced by the cut-threads tool
+  records = compactJumps(records);
   // --- Pass 1: compute stats needed for header ---
   let stitchCount = 0, colorChanges = 0;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
