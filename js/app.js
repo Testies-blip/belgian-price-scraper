@@ -2431,9 +2431,12 @@ function applyLassoAction(targetIdx) {
   drawQuantizedPreview(palette, indexMap, width, height, skipColors);
   renderSwatches(palette, indexMap, skipColors, colorNames);
   updateStitchPreview();
-  // After regenerating stitches, clip any thread segments that still cross the
-  // lasso area (travel stitches between scan rows can pass over erased pixels).
+  // After regenerating stitches, clip any travel segments that cross the lasso
+  // area (scan-line stitches can bridge over erased/recolored pixels when the
+  // gap is ≤ 60 px).  For erase, persist the polygon so the clip survives any
+  // future updateStitchPreview() call.
   cutStitchesInLasso(pts);
+  if (targetIdx === 255) cutPolygons.push(pts.map(p => ({ ...p })));
   const action = targetIdx === 255 ? 'erased' : `recolored to ${colorNames[targetIdx] || `color ${targetIdx + 1}`}`;
   setStatus(`Lasso ${action} ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
 }
