@@ -1079,18 +1079,25 @@ function runExport() {
     try {
       const { palette, indexMap, width, height } = lastQuantResult;
 
-      // Mirror the exact same parameters used by updateStitchPreview()
-      const densityMm   = Math.max(0.2, Math.min(2.0, Number(densityInput.value) || 0.3));
-      const stitchMm    = Math.max(1.0, Math.min(6.0,  Number(stitchInput.value)  || 2.5));
-      const PX_PER_MM   = 5;
-      const pitchPx     = Math.max(1, Math.round(densityMm * PX_PER_MM));
-      const stitchLenPx = Math.max(1, Math.round(stitchMm  * PX_PER_MM));
-      const fillAngleDeg = clampInt(Number(angleInput.value), 0, 89);
-
-      const records = generateStitches(
-        indexMap, width, height, palette,
-        { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg, colorAngles }
-      );
+      // Use the live stitch records (which include any Cut-threads edits) when
+      // available.  Only fall back to regenerating if the preview hasn't been
+      // rendered yet (e.g. the user exported without opening Stage 2).
+      let records;
+      if (lastStitchRecords) {
+        records = lastStitchRecords;
+      } else {
+        // Mirror the exact same parameters used by updateStitchPreview()
+        const densityMm   = Math.max(0.2, Math.min(2.0, Number(densityInput.value) || 0.3));
+        const stitchMm    = Math.max(1.0, Math.min(6.0,  Number(stitchInput.value)  || 2.5));
+        const PX_PER_MM   = 5;
+        const pitchPx     = Math.max(1, Math.round(densityMm * PX_PER_MM));
+        const stitchLenPx = Math.max(1, Math.round(stitchMm  * PX_PER_MM));
+        const fillAngleDeg = clampInt(Number(angleInput.value), 0, 89);
+        records = generateStitches(
+          indexMap, width, height, palette,
+          { pitchPx, stitchLenPx, skipColors, outlineOnly, minRegionPx: 40, fillAngleDeg, colorAngles }
+        );
+      }
 
       const stitchCount = records.filter(r => r.type === 'STITCH').length;
       const designName  = (currentFile ? currentFile.name.replace(/\.[^.]+$/, '') : 'design')
