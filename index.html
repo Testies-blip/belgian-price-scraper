@@ -164,7 +164,7 @@
           <button id="solo-btn" class="erase-btn" disabled title="Browse stitching layers one at a time (Esc to exit)">&#8801; Layers</button>
           <button id="draw-btn" class="erase-btn" disabled title="Paint or erase pixels (right-click&#x202F;=&#x202F;erase, Esc to exit)">&#9998; Draw</button>
           <button id="move-stitch-btn" class="erase-btn" disabled title="Click a stitch dot and drag to reposition it">&#10021; Move</button>
-          <button id="lasso-btn" class="erase-btn" disabled title="Draw a freehand shape to erase everything inside it (Esc to cancel)">&#9002; Lasso</button>
+          <button id="lasso-btn" class="erase-btn" disabled title="Draw a freehand shape to select an area, then erase or recolor it (Esc to cancel)">&#9002; Lasso</button>
           <div class="zoom-controls">
             <button id="zoom-out-btn" class="zoom-btn" disabled title="Zoom out (Ctrl+scroll)">&#8722;</button>
             <span id="zoom-label" class="zoom-label">100%</span>
@@ -176,6 +176,13 @@
             <canvas id="stitch-canvas"></canvas>
             <canvas id="erase-overlay"></canvas>
           </div>
+        </div>
+        <div id="lasso-action-bar" class="lasso-action-bar hidden">
+          <span class="lasso-action-label">Selection:</span>
+          <button id="lasso-erase-btn" class="lasso-action-btn lasso-erase-btn" title="Erase all stitches inside selection">&#128465; Delete</button>
+          <span class="lasso-action-sep">or recolor&thinsp;&rarr;</span>
+          <div id="lasso-color-swatches" class="lasso-color-swatches"></div>
+          <button id="lasso-cancel-btn" class="lasso-action-btn lasso-cancel-btn" title="Cancel selection (Esc)">&#10005;</button>
         </div>
         <div id="layer-nav" class="layer-nav hidden">
           <button id="layer-prev-btn" class="layer-nav-btn" title="Previous layer (&#8592; arrow key)">&#9664;</button>
@@ -243,6 +250,6 @@
   <script src="js/dst.js?v=8"></script>
   <script src="js/segmenter.js?v=1"></script>
   <script src="js/bodyparts.js?v=1"></script>
-  <script src="js/app.js?v=22"></script>
+  <script src="js/app.js?v=23"></script>
 </body>
 </html>

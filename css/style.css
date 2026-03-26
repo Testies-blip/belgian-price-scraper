@@ -996,3 +996,67 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   flex-shrink: 0;
   white-space: nowrap;
 }
+
+/* ── Lasso action bar ────────────────────────────────────────────────────── */
+.lasso-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.45rem 0.7rem;
+  background: #fff8f8;
+  border: 1px solid #f5c0bb;
+  border-radius: 7px;
+  margin-bottom: 0.5rem;
+  animation: lasso-bar-in 0.15s ease;
+}
+@keyframes lasso-bar-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.lasso-action-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.lasso-action-sep {
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.lasso-action-btn {
+  padding: 0.22rem 0.6rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  background: none;
+  color: var(--text);
+  transition: background 0.1s, color 0.1s;
+  white-space: nowrap;
+}
+.lasso-erase-btn  { border-color: #e74c3c; color: #e74c3c; }
+.lasso-erase-btn:hover  { background: #e74c3c; color: #fff; }
+.lasso-cancel-btn { border-color: var(--border); color: var(--muted); }
+.lasso-cancel-btn:hover { background: var(--bg); color: var(--text); }
+.lasso-color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+}
+.lasso-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.1s, border-color 0.1s;
+  flex-shrink: 0;
+}
+.lasso-swatch:hover {
+  transform: scale(1.25);
+  border-color: rgba(0,0,0,0.35);
+}

@@ -70,6 +70,10 @@ const contrastInput          = document.getElementById('contrast-val');
 const threadAngleRows        = document.getElementById('thread-angle-rows');
 const moveStitchBtn          = document.getElementById('move-stitch-btn');
 const lassoBtn               = document.getElementById('lasso-btn');
+const lassoActionBar         = document.getElementById('lasso-action-bar');
+const lassoEraseBtn          = document.getElementById('lasso-erase-btn');
+const lassoCancelBtn         = document.getElementById('lasso-cancel-btn');
+const lassoColorSwatches     = document.getElementById('lasso-color-swatches');
 const watermarkRange         = document.getElementById('watermark-opacity');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
@@ -102,6 +106,7 @@ let outlineOnly     = false;      // stitch outlines instead of fills
 let eraseAreaMode     = false;    // true while the drag-to-erase tool is active
 let lassoMode         = false;    // true while the freehand lasso-erase tool is active
 let _lassoDrag        = null;     // { points:[], rect, scaleX, scaleY } while drawing
+let _lassoSelection   = null;     // finalized polygon points waiting for action
 let copyNeighborMode  = false;    // true while the fill-neighbor tool is active
 let _eraseDrag        = null;     // { startX, startY, rect, scaleX, scaleY } while dragging
 let soloLayer         = null;     // null = show all layers; palette index = show only that layer
@@ -294,6 +299,8 @@ function handleFile(file) {
   lassoBtn.classList.remove('active');
   lassoBtn.disabled = true;
   _lassoDrag = null;
+  _lassoSelection = null;
+  lassoActionBar.classList.add('hidden');
   _drawDrag = null;
   const reader = new FileReader();
   reader.onload = e => {
@@ -2137,8 +2144,13 @@ document.addEventListener('mouseup', e => {
   if (lassoMode && _lassoDrag) {
     const pts = _lassoDrag.points;
     _lassoDrag = null;
-    clearEraseOverlay();
-    if (pts.length >= 3) applyLassoErase(pts);
+    if (pts.length >= 3) {
+      _lassoSelection = pts;
+      drawLassoPath(pts);          // keep the outline visible
+      showLassoActionBar();
+    } else {
+      clearEraseOverlay();
+    }
     return;
   }
   if (drawMode && _drawDrag) {
@@ -2262,11 +2274,44 @@ function drawLassoPath(pts) {
 }
 
 /**
- * Erase all indexMap pixels whose centre falls inside the freehand polygon.
- * Points are in working-canvas pixel space (same coordinate system as indexMap).
+ * Show the lasso action bar populated with palette colour swatches.
+ * Called after the user finishes drawing a selection.
  */
-function applyLassoErase(pts) {
-  if (!lastQuantResult || pts.length < 3) return;
+function showLassoActionBar() {
+  if (!lastQuantResult) return;
+  const { palette, colorNames = [] } = lastQuantResult;
+
+  // Rebuild colour swatches
+  lassoColorSwatches.innerHTML = '';
+  palette.forEach((col, idx) => {
+    if (skipColors.has(idx)) return;
+    const [r, g, b] = col;
+    const name = colorNames[idx] || `Color ${idx + 1}`;
+    const sw = document.createElement('button');
+    sw.className = 'lasso-swatch';
+    sw.style.background = `rgb(${r},${g},${b})`;
+    sw.title = `Recolor selection → ${name}`;
+    sw.addEventListener('click', () => applyLassoAction(idx));
+    lassoColorSwatches.appendChild(sw);
+  });
+
+  lassoActionBar.classList.remove('hidden');
+}
+
+/** Hide the action bar and clear the lasso selection state. */
+function clearLassoSelection() {
+  _lassoSelection = null;
+  lassoActionBar.classList.add('hidden');
+  clearEraseOverlay();
+}
+
+/**
+ * Apply a lasso action to all pixels inside _lassoSelection.
+ * targetIdx: palette index to assign (255 = erase/transparent).
+ */
+function applyLassoAction(targetIdx) {
+  const pts = _lassoSelection;
+  if (!lastQuantResult || !pts || pts.length < 3) return;
   pushUndo();
   const { indexMap, width, height, palette, colorNames = [] } = lastQuantResult;
 
@@ -2280,21 +2325,26 @@ function applyLassoErase(pts) {
   let changed = 0;
   for (let y = yMin; y <= yMax; y++) {
     for (let x = xMin; x <= xMax; x++) {
-      if (indexMap[y * width + x] !== 255 && pointInPolygon(x + 0.5, y + 0.5, pts)) {
-        indexMap[y * width + x] = 255;
+      const i = y * width + x;
+      if (indexMap[i] !== targetIdx && pointInPolygon(x + 0.5, y + 0.5, pts)) {
+        indexMap[i] = targetIdx;
         changed++;
       }
     }
   }
+
+  clearLassoSelection();
+
   if (changed === 0) {
     undoStack.pop(); updateUndoRedoBtns();
-    setStatus('Nothing to erase inside lasso');
+    setStatus('No pixels changed inside lasso');
     return;
   }
   drawQuantizedPreview(palette, indexMap, width, height, skipColors);
   renderSwatches(palette, indexMap, skipColors, colorNames);
   updateStitchPreview();
-  setStatus(`Lasso erased ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
+  const action = targetIdx === 255 ? 'erased' : `recolored to ${colorNames[targetIdx] || `color ${targetIdx + 1}`}`;
+  setStatus(`Lasso ${action} ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
 }
 
 /**
@@ -2648,14 +2698,13 @@ document.addEventListener('keydown', e => {
     return;
   }
   // Escape exits any active canvas-tool mode (and cancels any in-progress drag)
-  if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode || drawMode || lassoMode)) {
+  if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode || drawMode || lassoMode || _lassoSelection)) {
     eraseAreaMode    = false;
     copyNeighborMode = false;
     eraseBtn.classList.remove('active');
     copyNeighborBtn.classList.remove('active');
     eraseOverlay.classList.remove('active');
     _eraseDrag = null;
-    clearEraseOverlay();
     drawMode = false;
     drawBtn.classList.remove('active');
     drawPanel.classList.add('hidden');
@@ -2663,6 +2712,7 @@ document.addEventListener('keydown', e => {
     lassoMode = false;
     lassoBtn.classList.remove('active');
     _lassoDrag = null;
+    clearLassoSelection();
     return;
   }
   const mod = e.ctrlKey || e.metaKey;
@@ -2803,10 +2853,13 @@ lassoBtn.addEventListener('click', () => {
     eraseOverlay.style.cursor = 'crosshair';
   } else {
     _lassoDrag = null;
-    clearEraseOverlay();
+    clearLassoSelection();
     eraseOverlay.style.cursor = '';
   }
 });
+
+lassoEraseBtn.addEventListener('click', () => applyLassoAction(255));
+lassoCancelBtn.addEventListener('click', () => clearLassoSelection());
 
 moveStitchBtn.addEventListener('click', () => {
   moveMode = !moveMode;
