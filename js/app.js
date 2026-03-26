@@ -69,6 +69,7 @@ const brightnessInput        = document.getElementById('brightness-val');
 const contrastInput          = document.getElementById('contrast-val');
 const threadAngleRows        = document.getElementById('thread-angle-rows');
 const moveStitchBtn          = document.getElementById('move-stitch-btn');
+const lassoBtn               = document.getElementById('lasso-btn');
 const watermarkRange         = document.getElementById('watermark-opacity');
 
 // ── Body-part NLP patterns ────────────────────────────────────────────────────
@@ -99,6 +100,8 @@ let _segGeneration  = 0;      // incremented each time segmentation is kicked of
 let skipColors      = new Set();  // color indices excluded from stitching
 let outlineOnly     = false;      // stitch outlines instead of fills
 let eraseAreaMode     = false;    // true while the drag-to-erase tool is active
+let lassoMode         = false;    // true while the freehand lasso-erase tool is active
+let _lassoDrag        = null;     // { points:[], rect, scaleX, scaleY } while drawing
 let copyNeighborMode  = false;    // true while the fill-neighbor tool is active
 let _eraseDrag        = null;     // { startX, startY, rect, scaleX, scaleY } while dragging
 let soloLayer         = null;     // null = show all layers; palette index = show only that layer
@@ -206,6 +209,7 @@ function enterStage2() {
   soloBtn.disabled         = !lastQuantResult;
   drawBtn.disabled         = !lastQuantResult;
   moveStitchBtn.disabled   = !lastQuantResult;
+  lassoBtn.disabled        = !lastQuantResult;
   applyZoom();
 }
 
@@ -286,6 +290,10 @@ function handleFile(file) {
   drawBtn.classList.remove('active');
   drawPanel.classList.add('hidden');
   drawBtn.disabled = true;
+  lassoMode = false;
+  lassoBtn.classList.remove('active');
+  lassoBtn.disabled = true;
+  _lassoDrag = null;
   _drawDrag = null;
   const reader = new FileReader();
   reader.onload = e => {
@@ -556,6 +564,7 @@ function runQuantize(img) {
   zoomInBtn.disabled       = true;
   zoomOutBtn.disabled      = true;
   drawBtn.disabled         = true;
+  lassoBtn.disabled        = true;
   // Exit solo mode — palette/layout may change after re-quantize
   soloLayer = null;
   soloBtn.classList.remove('active');
@@ -2056,10 +2065,18 @@ function paintLine(x0, y0, x1, y1, colorIdx) {
  * subsequent mousemove events don't need to recompute them on every pixel move.
  */
 eraseOverlay.addEventListener('mousedown', e => {
-  if ((!eraseAreaMode && !copyNeighborMode && !drawMode) || !lastQuantResult) return;
+  if ((!eraseAreaMode && !copyNeighborMode && !drawMode && !lassoMode) || !lastQuantResult) return;
   const rect   = eraseOverlay.getBoundingClientRect();
   const scaleX = lastQuantResult.width  / rect.width;
   const scaleY = lastQuantResult.height / rect.height;
+
+  if (lassoMode) {
+    const cx = (e.clientX - rect.left) * scaleX;
+    const cy = (e.clientY - rect.top)  * scaleY;
+    _lassoDrag = { points: [{ x: cx, y: cy }], rect, scaleX, scaleY };
+    e.preventDefault();
+    return;
+  }
 
   if (drawMode) {
     const cx = Math.round((e.clientX - rect.left) * scaleX);
@@ -2089,6 +2106,12 @@ eraseOverlay.addEventListener('contextmenu', e => { if (drawMode) e.preventDefau
  * Update the selection rectangle while the mouse moves (even outside the overlay).
  */
 document.addEventListener('mousemove', e => {
+  if (lassoMode && _lassoDrag) {
+    const { rect, scaleX, scaleY, points } = _lassoDrag;
+    points.push({ x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY });
+    drawLassoPath(points);
+    return;
+  }
   if (drawMode && _drawDrag) {
     const { rect, scaleX, scaleY, erasing } = _drawDrag;
     const cx = Math.round((e.clientX - rect.left) * scaleX);
@@ -2111,6 +2134,13 @@ document.addEventListener('mousemove', e => {
  * Finish the drag: dispatch to the active tool (erase, fill-neighbor, or draw).
  */
 document.addEventListener('mouseup', e => {
+  if (lassoMode && _lassoDrag) {
+    const pts = _lassoDrag.points;
+    _lassoDrag = null;
+    clearEraseOverlay();
+    if (pts.length >= 3) applyLassoErase(pts);
+    return;
+  }
   if (drawMode && _drawDrag) {
     _drawDrag = null;
     const { palette, indexMap, width, height, colorNames = [] } = lastQuantResult;
@@ -2199,6 +2229,72 @@ function applyAreaErase(x1, y1, x2, y2) {
   renderSwatches(palette, indexMap, skipColors, colorNames);
   updateStitchPreview();
   setStatus(`Erased ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
+}
+
+/** Ray-casting point-in-polygon test. */
+function pointInPolygon(px, py, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+    if (((yi > py) !== (yj > py)) && px < (xj - xi) * (py - yi) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+/** Draw the freehand lasso outline on the erase overlay. */
+function drawLassoPath(pts) {
+  const ctx = eraseOverlay.getContext('2d');
+  ctx.clearRect(0, 0, eraseOverlay.width, eraseOverlay.height);
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(231,76,60,0.9)';
+  ctx.fillStyle   = 'rgba(231,76,60,0.10)';
+  ctx.lineWidth   = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Erase all indexMap pixels whose centre falls inside the freehand polygon.
+ * Points are in working-canvas pixel space (same coordinate system as indexMap).
+ */
+function applyLassoErase(pts) {
+  if (!lastQuantResult || pts.length < 3) return;
+  pushUndo();
+  const { indexMap, width, height, palette, colorNames = [] } = lastQuantResult;
+
+  // Bounding box to limit the per-pixel loop
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const xMin = Math.max(0,          Math.floor(Math.min(...xs)));
+  const xMax = Math.min(width - 1,  Math.ceil(Math.max(...xs)));
+  const yMin = Math.max(0,          Math.floor(Math.min(...ys)));
+  const yMax = Math.min(height - 1, Math.ceil(Math.max(...ys)));
+
+  let changed = 0;
+  for (let y = yMin; y <= yMax; y++) {
+    for (let x = xMin; x <= xMax; x++) {
+      if (indexMap[y * width + x] !== 255 && pointInPolygon(x + 0.5, y + 0.5, pts)) {
+        indexMap[y * width + x] = 255;
+        changed++;
+      }
+    }
+  }
+  if (changed === 0) {
+    undoStack.pop(); updateUndoRedoBtns();
+    setStatus('Nothing to erase inside lasso');
+    return;
+  }
+  drawQuantizedPreview(palette, indexMap, width, height, skipColors);
+  renderSwatches(palette, indexMap, skipColors, colorNames);
+  updateStitchPreview();
+  setStatus(`Lasso erased ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
 }
 
 /**
@@ -2552,7 +2648,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   // Escape exits any active canvas-tool mode (and cancels any in-progress drag)
-  if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode || drawMode)) {
+  if (e.key === 'Escape' && (eraseAreaMode || copyNeighborMode || drawMode || lassoMode)) {
     eraseAreaMode    = false;
     copyNeighborMode = false;
     eraseBtn.classList.remove('active');
@@ -2564,6 +2660,9 @@ document.addEventListener('keydown', e => {
     drawBtn.classList.remove('active');
     drawPanel.classList.add('hidden');
     _drawDrag = null;
+    lassoMode = false;
+    lassoBtn.classList.remove('active');
+    _lassoDrag = null;
     return;
   }
   const mod = e.ctrlKey || e.metaKey;
@@ -2692,6 +2791,23 @@ watermarkRange.addEventListener('input', () => {
 
 // ── Move-stitch tool ──────────────────────────────────────────────────────────
 
+lassoBtn.addEventListener('click', () => {
+  lassoMode = !lassoMode;
+  lassoBtn.classList.toggle('active', lassoMode);
+  eraseOverlay.classList.toggle('active', eraseAreaMode || copyNeighborMode || drawMode || lassoMode);
+  if (lassoMode) {
+    if (eraseAreaMode)    eraseBtn.click();
+    if (copyNeighborMode) copyNeighborBtn.click();
+    if (drawMode)         drawBtn.click();
+    if (moveMode)         moveStitchBtn.click();
+    eraseOverlay.style.cursor = 'crosshair';
+  } else {
+    _lassoDrag = null;
+    clearEraseOverlay();
+    eraseOverlay.style.cursor = '';
+  }
+});
+
 moveStitchBtn.addEventListener('click', () => {
   moveMode = !moveMode;
   moveStitchBtn.classList.toggle('active', moveMode);
@@ -2700,6 +2816,7 @@ moveStitchBtn.addEventListener('click', () => {
     if (eraseAreaMode)    eraseBtn.click();
     if (copyNeighborMode) copyNeighborBtn.click();
     if (drawMode)         drawBtn.click();
+    if (lassoMode)        lassoBtn.click();
     stitchCanvas.style.cursor = 'crosshair';
   } else {
     stitchCanvas.style.cursor = '';
