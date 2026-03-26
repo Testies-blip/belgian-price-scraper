@@ -137,6 +137,7 @@ let lastWorkingCanvas = null;   // canvas after buildWorkingCanvas (for watermar
 // Stitch records cache (enables move-stitch tool)
 let lastStitchRecords = null;
 let lastColorOrder    = null;
+let cutPolygons       = [];   // lasso polygons applied via "Cut threads"; re-applied after every stitch regeneration
 let moveMode          = false;
 let _moveDrag         = null;   // { stitchIdx } while dragging
 let drawMode          = false;    // true while draw/paint tool is active
@@ -302,6 +303,7 @@ function handleFile(file) {
   _lassoDrag = null;
   _lassoSelection = null;
   lassoActionBar.classList.add('hidden');
+  cutPolygons = [];
   _drawDrag = null;
   const reader = new FileReader();
   reader.onload = e => {
@@ -1619,6 +1621,8 @@ function updateStitchPreview() {
 
   renderStitchPreview(records, palette, colorOrder, width, height, soloLayer);
   if (soloLayer !== null) updateLayerNav();
+  // Re-apply any persisted cut polygons so they survive re-renders
+  applyCutPolygons();
 
   // Update stitch count + physical size readout
   const stitchCount = records.filter(r => r.type === 'STITCH').length;
@@ -2288,6 +2292,17 @@ function segmentCrossesPolygon(x1, y1, x2, y2, pts) {
  * through the lasso polygon to a JUMP so it is not rendered as a visible thread.
  * pts are in pixel space; stitch records are in DST space (pixel × 2, y flipped).
  */
+/** Re-apply every polygon in cutPolygons after a stitch regeneration. */
+function applyCutPolygons() {
+  if (cutPolygons.length === 0) return;
+  let total = 0;
+  for (const pts of cutPolygons) total += cutStitchesInLasso(pts);
+  if (total > 0 && lastStitchRecords && lastQuantResult) {
+    const { palette, width, height } = lastQuantResult;
+    renderStitchPreview(lastStitchRecords, palette, lastColorOrder, width, height, soloLayer);
+  }
+}
+
 function cutStitchesInLasso(pts) {
   if (!lastStitchRecords || !lastQuantResult) return 0;
   const { width, height } = lastQuantResult;
@@ -2430,6 +2445,12 @@ function applyLassoCut() {
     undoStack.pop(); updateUndoRedoBtns();
     setStatus('No thread segments found inside lasso');
     return;
+  }
+  // Persist the polygon so cuts survive any future stitch regeneration
+  cutPolygons.push(pts);
+  if (lastStitchRecords && lastQuantResult) {
+    const { palette, width, height } = lastQuantResult;
+    renderStitchPreview(lastStitchRecords, palette, lastColorOrder, width, height, soloLayer);
   }
   setStatus(`Cut ${cut} thread segment${cut !== 1 ? 's' : ''} inside lasso — Ctrl+Z to undo`);
 }
@@ -2662,6 +2683,7 @@ function captureState() {
     threadSnap:      threadSnap ? [...threadSnap] : null,
     depixelateLevel,
     watermarkOpacity,
+    cutPolygons: cutPolygons.map(poly => poly.map(p => ({ ...p }))),
     quantResult: lastQuantResult ? {
       palette:  lastQuantResult.palette.map(c => [...c]),
       indexMap: new Uint8Array(lastQuantResult.indexMap),  // snapshot copy
@@ -2699,6 +2721,7 @@ function applySnapshot(snap) {
   if (snap.rotateCW !== undefined) rotateCW = snap.rotateCW;
   colorAngles    = snap.colorAngles    ? { ...snap.colorAngles }    : {};
   colorFillTypes = snap.colorFillTypes ? { ...snap.colorFillTypes } : {};
+  cutPolygons    = snap.cutPolygons    ? snap.cutPolygons.map(poly => poly.map(p => ({ ...p }))) : [];
   threadSnap     = snap.threadSnap ? [...snap.threadSnap] : null;
   if (snap.depixelateLevel  !== undefined) depixelateLevel = snap.depixelateLevel;
   if (snap.watermarkOpacity !== undefined) {
