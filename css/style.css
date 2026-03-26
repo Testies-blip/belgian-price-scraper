@@ -1060,3 +1060,5 @@ h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
   transform: scale(1.25);
   border-color: rgba(0,0,0,0.35);
 }
+.lasso-cut-btn  { border-color: #e67e22; color: #e67e22; }
+.lasso-cut-btn:hover  { background: #e67e22; color: #fff; }

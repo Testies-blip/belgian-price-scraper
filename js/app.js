@@ -72,6 +72,7 @@ const moveStitchBtn          = document.getElementById('move-stitch-btn');
 const lassoBtn               = document.getElementById('lasso-btn');
 const lassoActionBar         = document.getElementById('lasso-action-bar');
 const lassoEraseBtn          = document.getElementById('lasso-erase-btn');
+const lassoCutBtn            = document.getElementById('lasso-cut-btn');
 const lassoCancelBtn         = document.getElementById('lasso-cancel-btn');
 const lassoColorSwatches     = document.getElementById('lasso-color-swatches');
 const watermarkRange         = document.getElementById('watermark-opacity');
@@ -2260,6 +2261,65 @@ function pointInPolygon(px, py, pts) {
   return inside;
 }
 
+/** Test whether segment A→B intersects segment C→D (exclusive of shared endpoints). */
+function segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+  const denom = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx);
+  if (Math.abs(denom) < 1e-9) return false;
+  const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / denom;
+  const u = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / denom;
+  return t > 0 && t < 1 && u > 0 && u < 1;
+}
+
+/**
+ * True if segment (x1,y1)→(x2,y2) passes through or has an endpoint inside
+ * the polygon defined by pts (pixel space).
+ */
+function segmentCrossesPolygon(x1, y1, x2, y2, pts) {
+  if (pointInPolygon(x1, y1, pts) || pointInPolygon(x2, y2, pts)) return true;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    if (segmentsIntersect(x1, y1, x2, y2, pts[i].x, pts[i].y, pts[j].x, pts[j].y))
+      return true;
+  }
+  return false;
+}
+
+/**
+ * Post-process lastStitchRecords: convert any STITCH segment whose line passes
+ * through the lasso polygon to a JUMP so it is not rendered as a visible thread.
+ * pts are in pixel space; stitch records are in DST space (pixel × 2, y flipped).
+ */
+function cutStitchesInLasso(pts) {
+  if (!lastStitchRecords || !lastQuantResult) return 0;
+  const { width, height } = lastQuantResult;
+
+  // Convert lasso polygon from pixel space → DST space so we can compare
+  // directly against stitch record coordinates.
+  const ptsDST = pts.map(p => ({
+    x: p.x * 2,
+    y: (height - 1 - p.y) * 2,
+  }));
+
+  let prevX = 0, prevY = 0, cut = 0;
+  for (const rec of lastStitchRecords) {
+    if (rec.type === 'STITCH') {
+      if (segmentCrossesPolygon(prevX, prevY, rec.x, rec.y, ptsDST)) {
+        rec.type = 'JUMP';
+        cut++;
+      }
+    }
+    // Track position for all record types so we know where the needle is
+    if (rec.type !== 'COLOR_CHANGE' && rec.type !== 'END') {
+      prevX = rec.x; prevY = rec.y;
+    }
+  }
+
+  if (cut > 0) {
+    renderStitchPreview(lastStitchRecords, lastQuantResult.palette,
+                        lastColorOrder, width, height, soloLayer);
+  }
+  return cut;
+}
+
 /** Draw the freehand lasso outline on the erase overlay. */
 function drawLassoPath(pts) {
   const ctx = eraseOverlay.getContext('2d');
@@ -2349,8 +2409,29 @@ function applyLassoAction(targetIdx) {
   drawQuantizedPreview(palette, indexMap, width, height, skipColors);
   renderSwatches(palette, indexMap, skipColors, colorNames);
   updateStitchPreview();
+  // After regenerating stitches, clip any thread segments that still cross the
+  // lasso area (travel stitches between scan rows can pass over erased pixels).
+  cutStitchesInLasso(pts);
   const action = targetIdx === 255 ? 'erased' : `recolored to ${colorNames[targetIdx] || `color ${targetIdx + 1}`}`;
   setStatus(`Lasso ${action} ${changed.toLocaleString()} pixel${changed !== 1 ? 's' : ''} — Ctrl+Z to undo`);
+}
+
+/**
+ * "Cut threads" action: does NOT modify the indexMap — only clips any visible
+ * stitch segment that passes through the lasso polygon.
+ */
+function applyLassoCut() {
+  const pts = _lassoSelection;
+  if (!lastStitchRecords || !pts || pts.length < 3) return;
+  pushUndo();
+  clearLassoSelection();
+  const cut = cutStitchesInLasso(pts);
+  if (cut === 0) {
+    undoStack.pop(); updateUndoRedoBtns();
+    setStatus('No thread segments found inside lasso');
+    return;
+  }
+  setStatus(`Cut ${cut} thread segment${cut !== 1 ? 's' : ''} inside lasso — Ctrl+Z to undo`);
 }
 
 /**
@@ -2865,6 +2946,7 @@ lassoBtn.addEventListener('click', () => {
 });
 
 lassoEraseBtn.addEventListener('click', () => applyLassoAction(255));
+lassoCutBtn.addEventListener('click',   () => applyLassoCut());
 lassoCancelBtn.addEventListener('click', () => clearLassoSelection());
 
 moveStitchBtn.addEventListener('click', () => {
