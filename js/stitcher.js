@@ -84,14 +84,14 @@ function generateStitches(indexMap, width, height, palette, opts) {
 
       // Primary fill pass
       emitFillAtAngle(records, scanMask, width, height, minRow, maxRow,
-                      angleDeg, ePitch, stitchLenPx, isOutline, state);
+                      angleDeg, ePitch, stitchLenPx, isOutline, state, indexMap);
 
       // Cross-hatch: second pass at the perpendicular angle
       if (fillType === 'cross') {
         const perpAngle = (angleDeg % 180 !== 0) ? 0 : 45;  // diag→horiz, horiz→diag
         state.pass = 0;  // reset alternating direction for the second direction
         emitFillAtAngle(records, scanMask, width, height, minRow, maxRow,
-                        perpAngle, ePitch, stitchLenPx, isOutline, state);
+                        perpAngle, ePitch, stitchLenPx, isOutline, state, indexMap);
       }
 
       curX = state.curX;
@@ -107,8 +107,32 @@ function generateStitches(indexMap, width, height, palette, opts) {
  * Emit stitches for one fill direction into records, updating state in-place.
  * state = { pass, first, curX, curY }
  */
+/**
+ * Walk a Bresenham line from DST point (x0,y0) to (x1,y1) and return true if
+ * any pixel on the path is erased (indexMap === 255).  Used to prevent fill
+ * stitches from bridging over erased/transparent areas.
+ */
+function segmentCrossesErasedPixels(x0dst, y0dst, x1dst, y1dst, indexMap, width, height) {
+  // Convert DST coords → pixel coords (integer)
+  let x = Math.round(x0dst / 2);
+  let y = height - 1 - Math.round(y0dst / 2);
+  const x1 = Math.round(x1dst / 2);
+  const y1 = height - 1 - Math.round(y1dst / 2);
+  const dx = Math.abs(x1 - x), dy = Math.abs(y1 - y);
+  const sx = x < x1 ? 1 : -1, sy = y < y1 ? 1 : -1;
+  let err = dx - dy;
+  for (;;) {
+    if (x >= 0 && y >= 0 && x < width && y < height && indexMap[y * width + x] === 255) return true;
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 <  dx) { err += dx; y += sy; }
+  }
+  return false;
+}
+
 function emitFillAtAngle(records, scanMask, width, height, minRow, maxRow,
-                         angleDeg, pitchPx, stitchLenPx, outlineOnly, state) {
+                         angleDeg, pitchPx, stitchLenPx, outlineOnly, state, indexMap) {
   const isDiag = (angleDeg % 180) !== 0;
 
   function emitPt(dstX, dstY) {
@@ -118,7 +142,11 @@ function emitFillAtAngle(records, scanMask, width, height, minRow, maxRow,
       state.first = false;
       emitStartLock(records, state.curX, state.curY);
     } else {
-      if (Math.abs(dstX - state.curX) > 120 || Math.abs(dstY - state.curY) > 120) {
+      const farEnough = Math.abs(dstX - state.curX) > 120 || Math.abs(dstY - state.curY) > 120;
+      const crossesGap = !farEnough && indexMap &&
+                         segmentCrossesErasedPixels(state.curX, state.curY, dstX, dstY,
+                                                    indexMap, width, height);
+      if (farEnough || crossesGap) {
         emitMove(records, state.curX, state.curY, dstX, dstY, JUMP);
       } else {
         records.push({ x: dstX, y: dstY, type: STITCH });
