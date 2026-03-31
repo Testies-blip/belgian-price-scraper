@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photo to Embroidery DST</title>
+  <link rel="stylesheet" href="css/style.css?v=8">
+  <!-- BodyPix / TensorFlow.js — loaded lazily by segmenter.js on first image -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js" defer></script>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Photo &rarr; Embroidery <span class="badge">DST</span></h1>
+      <p class="subtitle">Drop a photo and export a .DST file for Bernina DesignerPlus</p>
+    </header>
+
+    <!-- ── Stage 1 · Picture Enhancer ───────────────────────────────────── -->
+    <div id="stage-1" class="stage">
+
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="Drop image here or click to browse">
+        <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+        <div class="drop-zone-inner">
+          <svg class="drop-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="8" y="14" width="48" height="36" rx="4" stroke="currentColor" stroke-width="2.5"/>
+            <circle cx="22" cy="26" r="5" stroke="currentColor" stroke-width="2.5"/>
+            <path d="M8 40 L20 28 L32 38 L42 30 L56 40" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/>
+            <path d="M32 52 L32 62 M26 58 L32 64 L38 58" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <p class="drop-label">Drop JPG or PNG here</p>
+          <p class="drop-hint">or <span class="link-text">click to browse</span></p>
+        </div>
+      </div>
+
+      <div id="preview-section" class="preview-section hidden">
+        <div class="preview-row">
+          <div class="preview-panel">
+            <h3>Original</h3>
+            <canvas id="original-canvas"></canvas>
+          </div>
+          <div class="preview-panel">
+            <div class="quant-header">
+              <h3>Quantized preview</h3>
+              <button id="select-area-btn" class="select-area-btn" disabled title="Click a region to select all connected same-colour pixels">&#10022; Select</button>
+            </div>
+            <div class="quant-canvas-wrap">
+              <canvas id="quantized-canvas"></canvas>
+              <canvas id="select-overlay" class="select-overlay"></canvas>
+            </div>
+            <div id="palette-swatches" class="palette-swatches"></div>
+            <div id="selection-panel" class="selection-panel hidden">
+              <div class="selection-info">
+                <span id="selection-count" class="selection-count"></span>
+                <button id="selection-cancel-btn" class="selection-cancel-btn" title="Cancel selection (Esc)">&times; Cancel</button>
+              </div>
+              <div class="selection-actions">
+                <span class="selection-label">Recolor:</span>
+                <div id="selection-color-row" class="selection-color-row"></div>
+                <button id="selection-select-all-btn" class="selection-select-all-btn" title="Select all pixels of this color across the entire image">All color</button>
+                <button id="selection-grow-btn" class="selection-grow-btn" title="Expand selection by 1 pixel outward">Grow +</button>
+                <button id="selection-shrink-btn" class="selection-shrink-btn" title="Contract selection by 1 pixel inward">Shrink &minus;</button>
+                <button id="selection-erase-btn" class="selection-erase-btn">Erase</button>
+                <button id="selection-merge-btn" class="selection-merge-btn" title="Click another region to merge all pixels of that color into this selection&#x27;s color">Merge color &rarr;</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Segmentation status bar: hidden until an image is loaded -->
+        <div id="seg-status" class="seg-status hidden">
+          <span id="seg-icon" class="seg-icon" aria-hidden="true">&#9678;</span>
+          <span id="seg-text" class="seg-text">Recognising figure&hellip;</span>
+          <div id="seg-parts" class="seg-parts"></div>
+        </div>
+      </div>
+
+      <div id="request-box" class="request-box hidden">
+        <div class="request-header">
+          <label class="request-label" for="request-input">Request a change</label>
+          <div class="undo-row">
+            <button id="undo-btn" class="undo-btn" disabled title="Undo (Ctrl+Z)">&#8617; Undo</button>
+            <button id="redo-btn" class="undo-btn" disabled title="Redo (Ctrl+Y)">&#8618; Redo</button>
+          </div>
+        </div>
+        <div class="chips" id="chips">
+          <button class="chip" data-cmd="remove background">Remove bg</button>
+          <button class="chip" data-cmd="restore background">Restore bg</button>
+          <button class="chip" data-cmd="outline only">Outline</button>
+          <button class="chip" data-cmd="fill mode">Fill</button>
+          <button class="chip" data-cmd="reset everything">Reset</button>
+          <button class="chip" data-cmd="more colors">+ Colors</button>
+          <button class="chip" data-cmd="fewer colors">&minus; Colors</button>
+          <button class="chip" data-cmd="finer rows">Finer rows</button>
+          <button class="chip" data-cmd="looser rows">Looser rows</button>
+          <button class="chip" data-cmd="45 diagonal">45&deg; fill</button>
+          <button class="chip" data-cmd="horizontal fill">0&deg; fill</button>
+          <button class="chip" data-cmd="smooth edges">Smooth</button>
+          <button class="chip" data-cmd="clean regions">Clean</button>
+          <button class="chip" data-cmd="flip horizontal">Flip H</button>
+          <button class="chip" data-cmd="flip vertical">Flip V</button>
+          <button class="chip" data-cmd="rotate cw">Rotate &#8635;</button>
+          <button class="chip" data-cmd="sharpen image">Sharpen</button>
+          <button class="chip" data-cmd="blur image">Blur</button>
+          <button class="chip" data-cmd="snap threads">Threads</button>
+          <button class="chip chip--highlight" data-cmd="depixelate">Depixelate</button>
+        </div>
+        <div class="request-row">
+          <input type="text" id="request-input"
+            placeholder='e.g. "pants in 1 color", "make the jacket 2 colours", "remove bg"'
+            autocomplete="off">
+          <button id="request-btn">Apply</button>
+        </div>
+        <p id="request-feedback" class="request-feedback"></p>
+      </div>
+
+      <details id="settings" class="settings">
+        <summary>Image settings</summary>
+        <div class="settings-grid">
+          <label>
+            Width
+            <span class="hint">mm</span>
+            <input type="number" id="width-mm" value="100" min="10" max="500" step="1">
+          </label>
+          <label>
+            Colors
+            <span class="hint">2&ndash;16</span>
+            <input type="number" id="num-colors" value="6" min="2" max="16" step="1">
+          </label>
+          <label>
+            Brightness
+            <span class="hint">50&ndash;150</span>
+            <input type="number" id="brightness-val" value="100" min="50" max="150" step="5">
+          </label>
+          <label>
+            Contrast
+            <span class="hint">50&ndash;150</span>
+            <input type="number" id="contrast-val" value="100" min="50" max="150" step="5">
+          </label>
+        </div>
+      </details>
+
+      <div id="stage1-bar" class="stage1-bar hidden">
+        <button id="convert-btn" class="convert-btn" disabled>Stitch Preview &rarr;</button>
+      </div>
+
+    </div><!-- /stage-1 -->
+
+    <!-- ── Stage 2 · Stitch Converter ───────────────────────────────────── -->
+    <div id="stage-2" class="stage hidden">
+
+      <div class="stage2-topbar">
+        <button id="back-btn" class="back-btn">&larr; Edit Image</button>
+        <span id="stitch-info" class="stitch-info"></span>
+        <button id="export-btn" class="export-btn" disabled>Export .DST</button>
+      </div>
+
+      <div class="preview-panel preview-panel--stitch">
+        <div class="stitch-header">
+          <h3>Stitch preview <span class="stitch-hint">&mdash; click canvas to remove / restore a thread</span></h3>
+          <button id="erase-btn" class="erase-btn" disabled title="Drag on canvas to erase an area from the design">&#9986; Erase Area</button>
+          <button id="copy-neighbor-btn" class="erase-btn" disabled title="Drag to fill an area with the color surrounding it">&#9632; Fill Neighbor</button>
+          <button id="solo-btn" class="erase-btn" disabled title="Browse stitching layers one at a time (Esc to exit)">&#8801; Layers</button>
+          <button id="draw-btn" class="erase-btn" disabled title="Paint or erase pixels (right-click&#x202F;=&#x202F;erase, Esc to exit)">&#9998; Draw</button>
+          <button id="move-stitch-btn" class="erase-btn" disabled title="Click a stitch dot and drag to reposition it">&#10021; Move</button>
+          <button id="lasso-btn" class="erase-btn" disabled title="Draw a freehand shape to select an area, then erase or recolor it (Esc to cancel)">&#9002; Lasso</button>
+          <div class="zoom-controls">
+            <button id="zoom-out-btn" class="zoom-btn" disabled title="Zoom out (Ctrl+scroll)">&#8722;</button>
+            <span id="zoom-label" class="zoom-label">100%</span>
+            <button id="zoom-in-btn" class="zoom-btn" disabled title="Zoom in (Ctrl+scroll)">+</button>
+          </div>
+        </div>
+        <div id="stitch-scroll-wrap" class="stitch-scroll-wrap">
+          <div id="stitch-canvas-wrap" class="stitch-canvas-wrap">
+            <canvas id="stitch-canvas"></canvas>
+            <canvas id="erase-overlay"></canvas>
+          </div>
+        </div>
+        <div id="lasso-action-bar" class="lasso-action-bar hidden">
+          <span class="lasso-action-label">Selection:</span>
+          <button id="lasso-erase-btn" class="lasso-action-btn lasso-erase-btn" title="Erase all stitches inside selection (removes pixels from design)">&#128465; Delete</button>
+          <button id="lasso-cut-btn" class="lasso-action-btn lasso-cut-btn" title="Cut any thread that passes through the selection (keeps pixels, removes visible stitches only)">&#9986; Cut threads</button>
+          <span class="lasso-action-sep">or recolor&thinsp;&rarr;</span>
+          <div id="lasso-color-swatches" class="lasso-color-swatches"></div>
+          <button id="lasso-cancel-btn" class="lasso-action-btn lasso-cancel-btn" title="Cancel selection (Esc)">&#10005;</button>
+        </div>
+        <div id="layer-nav" class="layer-nav hidden">
+          <button id="layer-prev-btn" class="layer-nav-btn" title="Previous layer (&#8592; arrow key)">&#9664;</button>
+          <span id="layer-color-dot" class="layer-color-dot"></span>
+          <span id="layer-color-name" class="layer-color-name"></span>
+          <span id="layer-index-label" class="layer-index-label"></span>
+          <button id="layer-next-btn" class="layer-nav-btn" title="Next layer (&#8594; arrow key)">&#9654;</button>
+        </div>
+        <div id="draw-panel" class="draw-panel hidden">
+          <span class="draw-panel-label">Color:</span>
+          <div id="draw-color-row" class="draw-color-row"></div>
+          <span class="draw-panel-sep">|</span>
+          <span class="draw-panel-label">Brush:</span>
+          <div class="draw-brush-group">
+            <button class="draw-brush-btn active" data-size="1" title="1&#xd7;1 px">S</button>
+            <button class="draw-brush-btn" data-size="3" title="3&#xd7;3 px">M</button>
+            <button class="draw-brush-btn" data-size="5" title="5&#xd7;5 px">L</button>
+          </div>
+          <span class="draw-panel-hint">right-click&#x202F;=&#x202F;erase</span>
+        </div>
+      </div>
+
+      <details id="stitch-settings" class="settings" open>
+        <summary>Stitch settings</summary>
+        <div class="settings-grid">
+          <label>
+            Row density
+            <span class="hint">mm</span>
+            <input type="number" id="density-mm" value="0.3" min="0.2" max="2.0" step="0.1">
+          </label>
+          <label>
+            Stitch length
+            <span class="hint">mm</span>
+            <input type="number" id="stitch-mm" value="2.5" min="1.0" max="6.0" step="0.5">
+          </label>
+          <label>
+            Fill angle
+            <span class="hint">deg (0 = horiz, 45 = diag)</span>
+            <input type="number" id="fill-angle" value="45" min="0" max="89" step="15">
+          </label>
+          <label>
+            Image overlay
+            <span class="hint">0&ndash;50 %</span>
+            <input type="range" id="watermark-opacity" value="0" min="0" max="50" step="5" style="width:80px;vertical-align:middle">
+          </label>
+        </div>
+      </details>
+
+      <details id="thread-panel" class="settings">
+        <summary>Per-thread angles, fill type &amp; order</summary>
+        <div id="thread-angle-rows" class="thread-angle-rows"></div>
+      </details>
+
+    </div><!-- /stage-2 -->
+
+    <div class="status-bar">
+      <span id="status" class="status">Load an image to get started</span>
+    </div>
+
+  </div>
+
+  <script src="js/colornames.js?v=7"></script>
+  <script src="js/quantize.js?v=7"></script>
+  <script src="js/stitcher.js?v=9"></script>
+  <script src="js/dst.js?v=8"></script>
+  <script src="js/segmenter.js?v=1"></script>
+  <script src="js/bodyparts.js?v=1"></script>
+  <script src="js/app.js?v=30"></script>
+</body>
+</html>
